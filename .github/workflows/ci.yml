@@ -1,0 +1,80 @@
+name: CI
+
+# Khi nào chạy?
+on:
+  pull_request:          # mỗi PR: chạy test để biết có merge được không
+  push:
+    branches: [main]     # mỗi lần merge vào main: test + build + push image
+  workflow_dispatch:     # cho phép bấm chạy tay trong tab Actions
+
+jobs:
+  test:
+    runs-on: ubuntu-latest          # máy ảo Linux do GitHub cấp, xoá sạch sau mỗi lần chạy
+    strategy:
+      fail-fast: false              # 1 service fail thì 2 service kia vẫn chạy tiếp để xem kết quả
+      matrix:
+        service: [UserService, OrderService, PaymentService]   # nhân job thành 3 bản, chạy SONG SONG
+    defaults:
+      run:
+        working-directory: ${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v7            # lấy code về máy ảo
+
+      - uses: actions/setup-java@v6          # cài JDK 17 (khớp toolchain trong build.gradle)
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v6 # cache thư viện Gradle giữa các lần chạy -> lần sau nhanh hơn
+
+      - run: ./gradlew test
+
+      - name: Upload test report
+        if: failure()                        # chỉ khi test fail: tải báo cáo HTML về xem lỗi
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-report-${{ matrix.service }}
+          path: ${{ matrix.service }}/build/reports/tests/test
+
+  build-push:
+    needs: test                 # chỉ chạy khi CẢ 3 job test đều xanh
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'   # PR chưa được duyệt -> không tạo image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write           # quyền ghi lên GitHub Packages (GHCR), chỉ cấp cho job này
+    strategy:
+      matrix:
+        include:
+          - service: UserService
+            image: userservice
+          - service: OrderService
+            image: orderservice
+          - service: PaymentService
+            image: paymentservice
+    steps:
+      - uses: actions/checkout@v7
+
+      # GHCR bắt buộc tên viết thường: "thinhPhamDuc" -> "thinhphamduc"
+      - name: Lowercase owner
+        id: owner
+        run: echo "name=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}   # token tự sinh cho mỗi lần chạy, KHÔNG cần tạo secret
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: ./${{ matrix.service }}        # thư mục chứa Dockerfile của service
+          push: true
+          tags: |
+            ghcr.io/${{ steps.owner.outputs.name }}/mcservice-${{ matrix.image }}:${{ github.sha }}
+            ghcr.io/${{ steps.owner.outputs.name }}/mcservice-${{ matrix.image }}:main
+          # Cache layer Docker giữa các lần chạy CI
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
