@@ -1,0 +1,136 @@
+services:
+  # ============ USER ============
+  user-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: user_db
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: secret
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U app -d user_db" ]
+      interval: 5s
+      retries: 10
+    volumes:
+      - user-db-data:/var/lib/postgresql/data
+
+  userservice:
+    build: ./UserService
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://user-db:5432/user_db
+      SPRING_DATASOURCE_USERNAME: app
+      SPRING_DATASOURCE_PASSWORD: secret
+      LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
+    labels: # 👈 thêm 2 dòng này
+      logging: "elk"
+    depends_on:
+      user-db:
+        condition: service_healthy
+
+  # ============ PAYMENT ============
+  payment-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: payment_db
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: secret
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U app -d payment_db" ]
+      interval: 5s
+      retries: 10
+    volumes:
+      - payment-db-data:/var/lib/postgresql/data
+
+  paymentservice:
+    build: ./PaymentService
+    ports:
+      - "8083:8083"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://payment-db:5432/payment_db
+      SPRING_DATASOURCE_USERNAME: app
+      SPRING_DATASOURCE_PASSWORD: secret
+      LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
+    labels: # 👈 thêm 2 dòng này
+      logging: "elk"
+    depends_on:
+      payment-db:
+        condition: service_healthy
+
+  # ============ ORDER ============
+  order-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: order_db
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: secret
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U app -d order_db" ]
+      interval: 5s
+      retries: 10
+    volumes:
+      - order-db-data:/var/lib/postgresql/data
+
+  orderservice:
+    build: ./OrderService
+    ports:
+      - "8082:8082"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://order-db:5432/order_db
+      SPRING_DATASOURCE_USERNAME: app
+      SPRING_DATASOURCE_PASSWORD: secret
+      SERVICES_USER_URL: http://userservice:8081
+      SERVICES_PAYMENT_URL: http://paymentservice:8083
+      LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
+    labels: # 👈 thêm 2 dòng này
+      logging: "elk"
+    depends_on:
+      order-db:
+        condition: service_healthy
+      userservice:
+        condition: service_started
+      paymentservice:
+        condition: service_started
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
+    environment:
+      discovery.type: single-node          # chỉ 1 node, không tìm cluster
+      xpack.security.enabled: "false"      # ⚠️ TẮT bảo mật: chỉ dùng khi học ở local, TUYỆT ĐỐI không làm trên production
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"    # giới hạn RAM cho ES (ES cũng là app Java!)
+    ports:
+      - "9200:9200"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'" ]
+      interval: 10s
+      retries: 30
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.17.0
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.17.0
+    user: root                                     # cần quyền đọc log của Docker
+    command: [ "filebeat", "-e", "--strict.perms=false" ]
+    volumes:
+      - ./filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro   # file log của các container
+      - /var/run/docker.sock:/var/run/docker.sock:ro               # để hỏi Docker tên/label container
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+volumes:
+  user-db-data:
+  payment-db-data:
+  order-db-data:
+  es-data:

@@ -1,0 +1,24 @@
+filebeat.inputs:
+  - type: container                       # đọc định dạng log của Docker
+    paths:
+      - /var/lib/docker/containers/*/*.log
+
+processors:
+  # 1. Gắn thêm thông tin container (tên, label...) vào mỗi dòng log
+  - add_docker_metadata:
+      host: "unix:///var/run/docker.sock"
+  # 2. Bỏ log của container không có label logging=elk
+  - drop_event:
+      when:
+        not:
+          equals:
+            container.labels.logging: "elk"
+  # 3. Log của app là JSON nằm trong field "message" -> tách ra thành các field riêng
+  - decode_json_fields:
+      fields: ["message"]
+      target: ""
+      overwrite_keys: true
+      add_error_key: true
+
+output.elasticsearch:
+  hosts: ["http://elasticsearch:9200"]

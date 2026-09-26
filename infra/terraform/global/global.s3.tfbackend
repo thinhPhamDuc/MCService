@@ -1,0 +1,6 @@
+# Thay 123456789012 bằng AWS account id (xem output 'state_bucket' của stack bootstrap)
+bucket       = "mcservice-tfstate-123456789012"
+key          = "global/terraform.tfstate"
+region       = "ap-southeast-1"
+encrypt      = true
+use_lockfile = true
