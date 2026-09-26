@@ -1,0 +1,23 @@
+# Application: nói với ArgoCD "hãy làm cho cluster luôn khớp với thư mục deploy/envs/local trên Git".
+# File này KHÔNG nằm trong deploy/envs/local nên ArgoCD không tự đồng bộ nó.
+# Áp dụng 1 lần duy nhất: kubectl apply -f deploy/argocd/mcservice-local.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mcservice-local
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/thinhPhamDuc/MCService.git
+    targetRevision: main                     # theo dõi branch main
+    path: deploy/envs/local                  # thư mục kustomize
+  destination:
+    server: https://kubernetes.default.svc   # chính cluster mà ArgoCD đang chạy trong đó
+    namespace: mcservice
+  syncPolicy:
+    automated:
+      prune: true        # Git xoá 1 resource -> ArgoCD xoá nó khỏi cluster
+      selfHeal: true     # ai sửa tay trên cluster -> ArgoCD sửa lại theo Git
+    syncOptions:
+      - CreateNamespace=true

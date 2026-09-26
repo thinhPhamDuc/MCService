@@ -1,4 +1,6 @@
-FROM eclipse-temurin:17-jdk AS builder
+# Stage build chạy trên CPU của máy build ($BUILDPLATFORM), KHÔNG giả lập CPU khác:
+# file .jar chạy được trên mọi CPU nên chỉ cần build 1 lần rồi dùng chung cho amd64 và arm64.
+FROM --platform=$BUILDPLATFORM eclipse-temurin:17-jdk AS builder
 WORKDIR /app
 COPY . .
 RUN ./gradlew bootJar
