@@ -384,15 +384,60 @@ sau đó sửa `image: userservice:v2` trong `userservice.yaml` và `kubectl app
 
 **✍️ Trả lời:**
 ```
-Đoán:
-Thực tế:
-Vì sao:
+===== LẦN 1: build userservice:v2 rồi apply (làm theo hướng dẫn Minikube, nhưng chạy trên Docker Desktop) =====
+
+Đoán: apply xong thì K8s sẽ chạy bản v2.                                   ✅ Đúng
+
+Thực tế: pod mới chạy v2 THÀNH CÔNG, không có lỗi gì.
+  - kubectl get pods: userservice-65b94679c4-svlhx   1/1   Running   RESTARTS 0
+  - kubectl describe pod, phần Events:
+        Pulling    Pulling image "userservice:v2"
+        Pulled     Successfully pulled image "userservice:v2" in 27ms   ← lấy từ ngay trên máy, không qua mạng
+        Created    Container created
+        Started    Container started
+  - kubectl rollout history: lên revision 2
+  - Login vẫn bình thường.
+
+Vì sao không ra lỗi ErrImagePull như đề bài?
+  - Tình huống này viết cho MINIKUBE. Minikube có Docker daemon RIÊNG bên trong nó, tách khỏi Docker
+    trên máy. Build ở terminal thường (chưa chạy `eval $(minikube docker-env)`) thì image nằm ở Docker
+    của máy, Minikube không thấy → ErrImagePull.
+  - Máy mình dùng K8s của DOCKER DESKTOP: cluster lấy image từ chính kho image của Docker Desktop.
+    Mình build v2 ở đâu thì cluster cũng thấy ngay → chạy bình thường.
+  - 27ms là bằng chứng: tải 158MB qua mạng không thể nhanh như vậy.
+  - (158MB là kích thước đã nén; `docker images` báo 553MB là kích thước sau khi giải nén.)
+
+Bài học: "image có trên máy mình" KHÁC "image có ở nơi cluster tìm được". Cluster chỉ tìm ở
+  (1) kho image trên chính node đó, và (2) registry (mặc định là Docker Hub).
+
+===== LẦN 2: dùng tag CHƯA TỪNG BUILD để thấy lỗi thật (cách làm cho Docker Desktop) =====
+  kubectl set image deploy/userservice userservice=userservice:v3 -n mcservice
+  kubectl get pods -n mcservice -w
+
+Kết quả mong đợi (⏳ chạy để xác nhận, rồi dán output thật vào đây):
+  - Pod mới: ErrImagePull → ImagePullBackOff (thời gian giữa các lần thử kéo lại dài dần).
+  - describe pod, phần Events: Failed to pull image "userservice:v3" ... docker.io/library/userservice:v3
+    ... pull access denied / repository does not exist.
+    → Tên image không ghi registry thì K8s hiểu là Docker Hub, image "chính thức" (docker.io/library/...).
+      Không có ở máy → lên Docker Hub tìm → không có → lỗi.
+  - Pod v2 CŨ vẫn Running, login vẫn được.
+    → Rolling update chỉ xoá pod cũ khi pod mới đã READY. Pod mới không bao giờ Ready,
+      nên pod cũ được giữ lại và hệ thống không bị gián đoạn (xem thêm TH 5.7).
+
+Sửa thế nào cho đúng?
+  - Cách 1: quay về bản chạy tốt:  kubectl rollout undo deploy/userservice -n mcservice
+  - Cách 2: làm cho image tồn tại ở nơi cluster tìm được:
+      + Docker Desktop: docker build -t userservice:v3 ./UserService
+      + Minikube:       eval $(minikube docker-env) rồi mới build (hoặc: minikube image load userservice:v3)
+      + Production:     push image lên REGISTRY (GHCR/ECR, Bài 6) và ghi tên đầy đủ
+                        ghcr.io/thinhphamduc/mcservice-userservice:<sha>. Cluster nhiều node thì chỉ có
+                        registry mới là nơi MỌI node đều kéo được.
 ```
 
 ### TH 5.2 — Self-healing: "Lỡ tay xoá pod production!"
 ```bash
 kubectl get pods
-kubectl delete pod <tên-pod-userservice>
+                                            kubectl delete pod <tên-pod-userservice>
 kubectl get pods -w
 ```
 - Chuyện gì xảy ra? Pod mới có **cùng tên** với pod cũ không?
@@ -519,6 +564,111 @@ Tạo vài order, sau đó:
 
 ```
 
+### TH 5.10 — Thứ tự khởi động: initContainer
+> Lúc `kubectl apply -f k8s/` lần đầu, 3 pod service đều bị `RESTARTS = 2`, vì app lên trước DB (`Connection to order-db:5432 refused`).
+> K8s không có `depends_on`. Có cách nào cho app **chờ** DB không?
+
+⚠️ `PriorityClass` **không** phải là câu trả lời: nó quyết định pod nào bị đuổi trước khi cluster thiếu tài nguyên, không quyết định thứ tự khởi động.
+
+Thêm vào `spec.template.spec` của cả 3 service (ngang hàng với `containers:`), mỗi service trỏ tới DB của nó:
+
+```yaml
+      initContainers:
+        - name: wait-for-db
+          image: postgres:16-alpine
+          command:
+            - sh
+            - -c
+            - until pg_isready -h order-db -p 5432; do echo "waiting for order-db..."; sleep 2; done
+```
+
+Làm lại từ đầu để quan sát:
+```bash
+kubectl delete namespace mcservice          # ⚠️ xoá cả PVC = mất dữ liệu
+kubectl create namespace mcservice
+kubectl apply -f k8s/
+kubectl get pods -w
+kubectl logs <pod-orderservice> -c wait-for-db   # log của initContainer
+```
+
+- STATUS của pod service thay đổi theo thứ tự nào? RESTARTS giờ là bao nhiêu?
+- `pg_isready -h order-db` gọi qua **Service**. Vì sao readinessProbe của DB lại quan trọng cho initContainer này?
+- OrderService có cần initContainer chờ UserService và PaymentService không? Vì sao?
+- Nếu hệ thống đang chạy mà **DB chết 1 phút** thì initContainer có giúp được gì không? Cái gì giúp hệ thống sống sót lúc đó?
+- So sánh 3 cách: initContainer, app tự retry (`spring.datasource.hikari.initialization-fail-timeout`), sync wave của ArgoCD (Bài 7, TH 7.5).
+
+**✍️ Trả lời:**
+```
+
+```
+
+### TH 5.11 — Giới hạn của rolling update: "Bản lỗi mà vẫn lên production"
+> Ở TH 5.1 (image `v3` không tồn tại), rolling update **giữ lại pod cũ** nên hệ thống không bị gián đoạn.
+> Vậy có phải K8s luôn chặn được bản lỗi không?
+
+**Cơ chế cần nhớ:** K8s chỉ xoá pod cũ khi pod mới đã **READY**, và READY do **readinessProbe** quyết định.
+Với `replicas: 1`, cấu hình mặc định `maxSurge: 25%` (làm tròn lên = 1) và `maxUnavailable: 25%` (làm tròn xuống = 0) nghĩa là: được tạo thêm 1 pod mới, **không được phép thiếu pod nào**.
+
+**Làm:**
+1. Trong `UserService/src/main/java/com/app/userservice/auth/AuthController.java`, cố ý làm hỏng logic login: đổi
+   ```java
+   .filter(u -> u.getPassword().equals(request.password()))
+   ```
+   thành
+   ```java
+   .filter(u -> false)          // BUG cố ý: không ai login được
+   ```
+2. Build và deploy:
+   ```bash
+   docker build -t userservice:broken ./UserService
+   kubectl set image deploy/userservice userservice=userservice:broken -n mcservice
+   kubectl get pods -n mcservice -w
+   ```
+3. Chạy lại port-forward 8081 (port-forward cũ đứt khi pod cũ bị xoá), rồi login bằng `alice / 123456`.
+4. Thử `curl localhost:8081/actuator/health`.
+
+**Đoán trước:**
+- Rolling update có giữ lại pod cũ như TH 5.1 không?
+- Login còn được không? Health trả về gì?
+
+**Câu hỏi:**
+- So sánh với TH 5.1: vì sao lần này K8s **thay hết** pod cũ? K8s kiểm tra được điều gì, và **không** kiểm tra được điều gì?
+- Readiness chỉ trả lời *"app có khởi động được không?"*. Vậy câu hỏi *"app có chạy **đúng** không?"* do lớp nào trả lời?
+- Đẩy cùng thay đổi này lên GitHub **qua một branch + Pull Request** (không push thẳng `main`):
+  ```bash
+  git checkout -b broken-login
+  git commit -am "bug: broken login" && git push -u origin broken-login
+  ```
+  CI của Bài 6 có chặn được không? Test nào fail? Có image nào được push lên GHCR không?
+- ⏱️ Nếu **không ai** chạy `rollout undo` thì K8s có tự rollback không? Tìm hiểu `progressDeadlineSeconds` và trạng thái `ProgressDeadlineExceeded`.
+  (Gợi ý: đúng với cả TH 5.1. K8s chỉ **dừng** rollout lại, chứ không tự quay về.)
+
+**Điền bảng: mỗi lớp phòng thủ chặn được loại lỗi nào?**
+
+| Lớp | TH 5.1 (image không tồn tại) | TH 5.11 (login luôn lỗi) | Lỗi rò rỉ bộ nhớ (2 tiếng sau mới chết) |
+|---|---|---|---|
+| ① CI build + test (Bài 6) | | | |
+| ② Rolling update + readinessProbe | | | |
+| ③ Monitoring + alert (Bài 4) | | | |
+| ④ Rollback (`rollout undo`, `git revert`) | | | |
+
+**Dọn dẹp:**
+```bash
+kubectl rollout undo deploy/userservice -n mcservice
+git checkout main
+git checkout -- UserService/        # khôi phục code nếu còn sửa ở local
+git branch -D broken-login          # xoá branch local (đóng PR trên GitHub)
+```
+
+**✍️ Trả lời:**
+```
+Đoán:
+Thực tế:
+Vì sao K8s thay hết pod cũ:
+CI có chặn không, test nào fail:
+K8s có tự rollback không:
+```
+
 ---
 
 ## 8. Câu hỏi nộp bài
@@ -565,4 +715,6 @@ eval $(minikube docker-env -u)       # trả lệnh docker về Docker Desktop
 - [ ] TH 5.7 – Rollback
 - [ ] TH 5.8 – OOMKilled
 - [ ] TH 5.9 – Dữ liệu và PVC
+- [ ] TH 5.10 – Thứ tự khởi động (initContainer)
+- [ ] TH 5.11 – Giới hạn của rolling update
 - [ ] Câu hỏi nộp bài

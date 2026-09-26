@@ -1,0 +1,68 @@
+# Secret: thông tin đăng nhập DB (tách khỏi Deployment để quản lý riêng)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: user-db-secret
+type: Opaque
+stringData:
+  POSTGRES_DB: user_db
+  POSTGRES_USER: app
+  POSTGRES_PASSWORD: secret
+---
+# PVC: "xin" 1GB ổ đĩa lâu dài cho Postgres (tương đương named volume trong compose)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: user-db-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-db
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate          # DB: tắt pod cũ rồi mới bật pod mới (không cho 2 Postgres cùng ghi 1 ổ đĩa)
+  selector:
+    matchLabels:
+      app: user-db
+  template:
+    metadata:
+      labels:
+        app: user-db        # nhãn này để Service tìm ra pod
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          envFrom:
+            - secretRef:
+                name: user-db-secret     # nạp toàn bộ key trong Secret thành biến môi trường
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U app -d user_db"]
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: user-db-data
+---
+# Service: tạo tên DNS "user-db" trỏ vào pod có label app=user-db
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-db
+spec:
+  selector:
+    app: user-db
+  ports:
+    - port: 5432

@@ -1,0 +1,12 @@
+# Base: manifest dùng chung cho mọi môi trường (viết ở Bài 5).
+# Không ghi namespace, không ghi tag image ở đây: phần đó do overlay trong deploy/envs/* quyết định.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - user-db.yaml
+  - userservice.yaml
+  - payment-db.yaml
+  - paymentservice.yaml
+  - order-db.yaml
+  - orderservice.yaml

@@ -1,0 +1,20 @@
+# Overlay "local": môi trường chạy trên Kubernetes của Docker Desktop.
+# ArgoCD theo dõi thư mục này. Deploy = đổi newTag (CI sẽ tự làm ở Bước 4 của Bài 7).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mcservice
+
+resources:
+  - ../../base
+
+images:
+  - name: userservice
+    newName: ghcr.io/thinhphamduc/mcservice-userservice
+    newTag: e215d06aaeef9467b7b874a1eba078f0074a64ea
+  - name: orderservice
+    newName: ghcr.io/thinhphamduc/mcservice-orderservice
+    newTag: e215d06aaeef9467b7b874a1eba078f0074a64ea
+  - name: paymentservice
+    newName: ghcr.io/thinhphamduc/mcservice-paymentservice
+    newTag: e215d06aaeef9467b7b874a1eba078f0074a64ea
