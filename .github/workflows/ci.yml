@@ -83,3 +83,38 @@ jobs:
           # Cache layer Docker giữa các lần chạy CI
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  # CD: ghi tag image vừa build vào Git -> ArgoCD thấy Git đổi -> tự deploy.
+  # CI KHÔNG đụng vào cluster, chỉ sửa Git (mô hình GitOps "pull").
+  update-manifest:
+    needs: build-push           # chỉ chạy khi CẢ 3 image đã push thành công
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write           # quyền commit + push vào repo, chỉ cấp cho job này
+    # 2 lần push sát nhau -> 2 job này chạy lần lượt, không giẫm lên nhau khi push
+    concurrency:
+      group: update-manifest-local
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main             # lấy main MỚI NHẤT (không phải commit đã kích hoạt) để push không bị từ chối
+
+      - name: Set image tags to this commit
+        # Monorepo: 1 commit build cả 3 image cùng SHA, nên đổi mọi dòng newTag về SHA này
+        run: |
+          sed -i -E "s|(newTag:).*|\1 ${GITHUB_SHA}|" deploy/envs/local/kustomization.yaml
+          git diff
+
+      - name: Commit and push
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add deploy/envs/local/kustomization.yaml
+          if git diff --cached --quiet; then
+            echo "Tag đã đúng, không có gì để commit"
+            exit 0
+          fi
+          git commit -m "deploy(local): ${GITHUB_SHA::7}"
+          git push
