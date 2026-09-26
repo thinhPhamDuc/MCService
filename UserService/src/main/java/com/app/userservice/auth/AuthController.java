@@ -48,7 +48,7 @@ public class AuthController {
 
         user.setToken(UUID.randomUUID().toString());
         userRepository.save(user);
-        log.info("Login success userId={} username={}", user.getId(), user.getUsername());
+        log.info("Login success v2 userId={} username={}", user.getId(), user.getUsername());
         return new LoginResponse(user.getId(), user.getUsername(), user.getToken());
     }
 
