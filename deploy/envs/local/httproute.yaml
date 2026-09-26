@@ -1,0 +1,25 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: public-api
+spec:
+  parentRefs:
+    - name: public          # gắn vào Gateway nào?
+      namespace: gateway
+  hostnames:
+    - mcservice.localhost
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /auth
+      backendRefs:
+        - name: userservice
+          port: 8081
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /orders        # đường dẫn của OrderService
+      backendRefs:
+        - name: orderservice
+          port: 8082
