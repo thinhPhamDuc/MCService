@@ -132,7 +132,7 @@ Ngoài ra: `argocd.localhost` → `argocd-server:80`, qua route `deploy/platform
 | `deploy/envs/local/kustomization.yaml` → `newTag` | **Bot CI** sửa Git | – | ✅ Có |
 | `deploy/argocd/mcservice-local.yaml` (Application) | Bạn, `kubectl apply` **1 lần** | `argocd` | ❌ Không |
 | `deploy/platform/gateway.yaml` (GatewayClass, Gateway `public`) | Bạn, `kubectl apply` | `gateway` | ❌ Không |
-| `deploy/platform/argocd-route.yaml` | Bạn, `kubectl apply` | `argocd` | ❌ Không (và **chưa commit**) |
+| `deploy/platform/argocd-route.yaml` | Bạn, `kubectl apply` | `argocd` | ❌ Không |
 | ArgoCD v3.5.3 (install.yaml) | Bạn, `kubectl apply --server-side` | `argocd` | ❌ Không |
 | Envoy Gateway v1.9.1 (install.yaml) | Claude, `kubectl apply --server-side` | `envoy-gateway-system` | ❌ Không |
 | Patch `server.insecure` của ArgoCD | Bạn, `kubectl patch` | `argocd` | ❌ Không, **không có trong Git** |
@@ -240,6 +240,22 @@ Lưu ý: DB của Compose (volume `mcservice_*-db-data`) và DB trong K8s (PVC) 
 
 ## 7. Tạm dừng K8s để làm việc khác
 
+### Trước hết: K8s không phải chỗ để test code đang viết
+
+| | ① IDE / `./gradlew bootRun` | ② `docker compose up --build` | ③ K8s |
+|---|---|---|---|
+| Code nào chạy | Code **đang sửa** | Code **đang sửa** (build image local) | Chỉ code **đã merge vào main** (image do CI build) |
+| Database | H2 trong RAM (`jdbc:h2:mem:...`) | Postgres container | Postgres + PVC |
+| Cần Docker không | **Không** | Có | Có |
+| Gọi thử | `localhost:8081/8082/8083` | `localhost:8081/8082/8083` | `mcservice.localhost` |
+| Sửa code xong thấy kết quả sau | Vài giây | ~1 phút | ~6 phút |
+
+Quy trình: code → test bằng ① (hoặc ②) → branch + PR → merge main → ③ tự deploy.
+Vì vậy, "tạm dừng K8s" chỉ là chuyện **nhường RAM**, không ảnh hưởng gì đến việc code và test.
+
+- Test bằng ① → **cách C** (quit Docker Desktop), nhẹ máy nhất.
+- Test bằng ② → **cách A**. Máy chậm thì chuyển sang **B**.
+
 Chọn **một** trong các cách dưới, tuỳ việc bạn cần:
 
 | Cách | Khi nào dùng | Giải phóng | Giữ lại |
@@ -250,6 +266,8 @@ Chọn **một** trong các cách dưới, tuỳ việc bạn cần:
 | ❌ Bỏ tick *Enable Kubernetes* / *Reset Kubernetes Cluster* | **Không dùng** | – | **Mất sạch cluster** |
 
 ### Cách B: tạm dừng
+
+> Có sẵn script: `./scripts/k8s-pause.sh` (chạy đúng các lệnh bên dưới + kiểm tra context `docker-desktop`).
 
 ```bash
 # 1. Tắt auto-sync TRƯỚC. Nếu không, selfHeal thấy replicas lệch Git sẽ bật lại ngay
@@ -265,6 +283,8 @@ Trong lúc tạm dừng: merge vào main thì CI vẫn build và bot vẫn sửa
 Trên UI ArgoCD, app hiện **OutOfSync**. Như vậy là đúng.
 
 ### Cách B: chạy lại
+
+> Có sẵn script: `./scripts/k8s-resume.sh` (apply lại Application, đợi pod chạy, thử login qua Gateway). API để test: `learning/api-qua-gateway.md`.
 
 ```bash
 # Apply lại Application từ Git: auto-sync + selfHeal được bật lại.
