@@ -12,10 +12,10 @@ resources:
 images:
   - name: userservice
     newName: ghcr.io/thinhphamduc/mcservice-userservice
-    newTag: 3695ca93bbdfe3076d0f67a9df072b882df342aa
+    newTag: 9873bde820d8282e0ec3fc84c0488f40858a4d69
   - name: orderservice
     newName: ghcr.io/thinhphamduc/mcservice-orderservice
-    newTag: 3695ca93bbdfe3076d0f67a9df072b882df342aa
+    newTag: 9873bde820d8282e0ec3fc84c0488f40858a4d69
   - name: paymentservice
     newName: ghcr.io/thinhphamduc/mcservice-paymentservice
-    newTag: 3695ca93bbdfe3076d0f67a9df072b882df342aa
+    newTag: 9873bde820d8282e0ec3fc84c0488f40858a4d69
