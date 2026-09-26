@@ -7,6 +7,13 @@ on:
     branches: [main]     # mỗi lần merge vào main: test + build + push image
   workflow_dispatch:     # cho phép bấm chạy tay trong tab Actions
 
+# Mỗi branch/PR chỉ có 1 lần chạy tại một thời điểm: push mới sẽ HUỶ lần chạy cũ đang dở.
+# Không có dòng này: push A rồi push B sát nhau, nếu A build xong SAU B thì bot ghi newTag = A
+# -> cluster quay về bản CŨ. Huỷ A là an toàn vì commit B đã chứa luôn thay đổi của A.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest          # máy ảo Linux do GitHub cấp, xoá sạch sau mỗi lần chạy
@@ -92,10 +99,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write           # quyền commit + push vào repo, chỉ cấp cho job này
-    # 2 lần push sát nhau -> 2 job này chạy lần lượt, không giẫm lên nhau khi push
-    concurrency:
-      group: update-manifest-local
-      cancel-in-progress: false
+    # Không cần concurrency riêng ở đây: concurrency ở đầu file đã đảm bảo trên main chỉ có 1 lần chạy
     steps:
       - uses: actions/checkout@v7
         with:
