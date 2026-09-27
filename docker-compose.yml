@@ -92,6 +92,51 @@ services:
       paymentservice:
         condition: service_started
 
+  # ============ IMPORT CSV (docs/csv-import-design.md) ============
+  import-db:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: import_db
+      MYSQL_USER: app
+      MYSQL_PASSWORD: secret
+      MYSQL_ROOT_PASSWORD: secret
+    ports:
+      - "3307:3306"   # 3307 ở máy host: chạy ImportService từ IDE và mở bằng DB client, không đụng MySQL cài sẵn
+    healthcheck:
+      # -h 127.0.0.1: kiểm tra qua TCP. Lúc khởi tạo lần đầu MySQL chạy 1 server tạm chỉ nghe qua socket,
+      # ping qua socket sẽ báo "healthy" quá sớm.
+      test: [ "CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u app -psecret --silent" ]
+      interval: 5s
+      retries: 20
+    volumes:
+      - import-db-data:/var/lib/mysql
+
+  thirdparty-mock:
+    build: ./ThirdPartyMock
+    ports:
+      - "8090:8090"
+    environment:
+      LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
+    labels:
+      logging: "elk"
+
+  importservice:
+    build: ./ImportService
+    ports:
+      - "8084:8084"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://import-db:3306/import_db?rewriteBatchedStatements=true
+      SPRING_DATASOURCE_USERNAME: app
+      SPRING_DATASOURCE_PASSWORD: secret
+      LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
+    labels:
+      logging: "elk"
+    depends_on:
+      import-db:
+        condition: service_healthy
+      thirdparty-mock:
+        condition: service_started
+
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
     environment:
@@ -133,4 +178,5 @@ volumes:
   user-db-data:
   payment-db-data:
   order-db-data:
+  import-db-data:
   es-data:

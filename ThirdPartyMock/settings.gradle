@@ -1,0 +1,6 @@
+plugins {
+    // Cho phép Gradle tự tải JDK 25 nếu máy chưa có (máy dev / runner CI chỉ cần 1 JDK bất kỳ để chạy Gradle)
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
+}
+
+rootProject.name = 'ThirdPartyMock'

@@ -1,6 +1,6 @@
 # Thiết kế: Import CSV ~1 triệu dòng (ImportService)
 
-> Trạng thái: **BẢN NHÁP — chờ duyệt**. Chưa có dòng code nào. Nhánh: `feature/csv-import`.
+> Trạng thái: **Đã duyệt** — Phase 1 xong (2026-09-27). Nhánh: `feature/csv-import`.
 
 ## 0. Quyết định đã chốt
 
@@ -121,7 +121,7 @@ Muốn tăng tốc (khi bên thứ ba cho phép) chỉ cần tăng `import.api.m
 
 **`import_job`** — `id` (PK), `file_name`, `status` (`QUEUED` → `INGESTING` → `PROCESSING` → `COMPLETED` / `COMPLETED_WITH_ERRORS` / `FAILED`), `total_rows`, `processed_rows`, `failed_rows`, `invalid_rows`, `created_at`, `finished_at`.
 
-**`import_row`** (staging) — PK `(job_id, row_no)`; 15 cột dữ liệu thô; `status` (`NEW` / `PROCESSING` / `DONE` / `FAILED`), `attempts`, `error`, `claimed_at`. Index `(job_id, status)` cho câu claim.
+**`import_row`** (staging) — PK `(job_id, row_no)`; 15 cột dữ liệu thô; `status` (`NEW` / `PROCESSING` / `DONE` / `FAILED`), `attempts`, `error`, `claimed_at`. Cột `status` của CSV lưu thành `customer_status` để không trùng tên. Index `(status, job_id, row_no)` cho câu claim (worker lấy dòng `NEW` của mọi job).
 
 **`customer`** (bảng đích) — `id` AUTO_INCREMENT, các cột dữ liệu đã chuẩn hoá + kết quả từ API (`verified`, `risk_score`), `UNIQUE(job_id, row_no)`.
 
@@ -137,6 +137,7 @@ ThirdPartyMock (service Spring Boot nhỏ, port 8090):
 
 ```
 POST /v1/verify/bulk        (tối đa 100 item/request)
+  body: [{ "externalId", "fullName", "email", "phone", "country" }, ...]
   → [{ "externalId": "...", "verified": true, "riskScore": 17 }, ...]
 ```
 
