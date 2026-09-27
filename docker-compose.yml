@@ -125,10 +125,13 @@ services:
     ports:
       - "8084:8084"
     environment:
-      SPRING_DATASOURCE_URL: jdbc:mysql://import-db:3306/import_db?rewriteBatchedStatements=true
+      SPRING_DATASOURCE_URL: jdbc:mysql://import-db:3306/import_db
       SPRING_DATASOURCE_USERNAME: app
       SPRING_DATASOURCE_PASSWORD: secret
+      IMPORT_STORAGE_DIR: /data/imports
       LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
+    volumes:
+      - import-files:/data/imports   # file upload chờ ingest; mất file này khi container bị xoá nếu không có volume
     labels:
       logging: "elk"
     depends_on:
@@ -179,4 +182,5 @@ volumes:
   payment-db-data:
   order-db-data:
   import-db-data:
+  import-files:
   es-data:

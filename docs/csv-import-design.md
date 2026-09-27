@@ -1,6 +1,6 @@
 # Thiết kế: Import CSV ~1 triệu dòng (ImportService)
 
-> Trạng thái: **Đã duyệt** — Phase 1 xong (2026-09-27). Nhánh: `feature/csv-import`.
+> Trạng thái: **Đã duyệt** — Phase 1, 2 xong (2026-09-27). Nhánh: `feature/csv-import`.
 
 ## 0. Quyết định đã chốt
 
@@ -40,10 +40,10 @@ Không sửa UserService / OrderService / PaymentService — 3 service cũ vẫn
 **Vì sao đọc chỉ cần 1 thread:** đọc đĩa hàng trăm MB/s, parse 1 triệu dòng mất vài giây. Chậm là ở **insert DB** (và sau đó là gọi API). Nên:
 
 ```
-1 reader ──chunk 1000 dòng──▶ [hàng đợi giới hạn 10 chunk] ──▶ W writer (2–4 thread) ──batch insert──▶ MySQL
+1 reader ──chunk 1000 dòng──▶ [hàng đợi giới hạn 10 chunk] ──▶ W writer (mặc định 6 thread) ──batch insert──▶ MySQL
 ```
 
-Đúng ý bạn "batch 1000 record một lượt": reader gom 1000 dòng thành 1 chunk, writer insert cả chunk bằng **1 câu multi-row INSERT** (JDBC `rewriteBatchedStatements=true`).
+Đúng ý bạn "batch 1000 record một lượt": reader gom 1000 dòng thành 1 chunk, writer insert cả chunk bằng **1 câu multi-row INSERT** (JDBC `rewriteBatchedStatements=true` — xem số đo mục 3).
 
 **Mấu chốt: số thread KHÔNG phụ thuộc số dòng.**
 
@@ -52,7 +52,7 @@ Không sửa UserService / OrderService / PaymentService — 3 service cũ vẫn
 | Tạo 1 thread cho mỗi batch → 1 triệu dòng = 1000 thread, 10 triệu = 10.000 thread → sập | **Thread pool cố định** + **hàng đợi có giới hạn** (backpressure) |
 
 - Số thread được quyết định bởi **tài nguyên** (connection pool DB, CPU, rate limit API) — cấu hình được.
-- Số dòng chỉ quyết định **thời gian chạy**: 1 triệu hay 5 triệu dòng thì vẫn 1 reader + W writer + N worker, RAM tối đa ≈ 10 chunk × 1000 dòng.
+- Số dòng chỉ quyết định **thời gian chạy**: 1 triệu hay 5 triệu dòng thì vẫn 1 reader + W writer + N worker, RAM tối đa ≈ (W + 10) chunk × 1000 dòng.
 - Hàng đợi đầy → reader tự **chờ** (không đọc thêm) → không tràn RAM dù file lớn bao nhiêu.
 - Muốn nhanh hơn nữa → **thêm pod** (scale ngang), không tăng thread trong 1 pod. Kiến trúc B cho phép vì các pod lấy việc qua `SKIP LOCKED` không trùng nhau.
 - Nhiều file upload cùng lúc → giai đoạn 1 dùng pool riêng tối đa `import.ingest.max-concurrent-jobs` (mặc định 1), file khác xếp hàng trạng thái `QUEUED`. Giai đoạn 2 dùng chung giới hạn cho mọi job.
@@ -108,14 +108,30 @@ Vì sao Java 25 chứ không phải 21: từ Java 24 (JEP 491), virtual thread *
 | Thành phần | Key cấu hình | Mặc định | Công thức / lý do |
 |---|---|---|---|
 | Reader | — | 1 | Đọc file tuần tự |
-| Writer (giai đoạn 1) | `import.ingest.writers` | 3 | Giới hạn bởi MySQL + pool; >4 chỉ tranh lock |
+| Writer (giai đoạn 1) | `import.ingest.writers` | 6 | Đo thật (bảng bên dưới): tăng tới ~6 thì nhanh dần, 12 không nhanh hơn — MySQL đã là nút cổ chai |
 | Worker (giai đoạn 2, virtual thread) | `import.process.workers` | 8 | Số chunk 500 dòng đang xử lý cùng lúc = số transaction claim/ghi đồng thời |
 | Bulk request đồng thời | `import.api.max-concurrent` | 16 | `≈ số request/giây mong muốn × độ trễ API`. Happy case: độ trễ 100 ms, 16 đồng thời → 160 request/s × 100 dòng = 16.000 dòng/s → 1 triệu dòng ≈ 1–2 phút |
 | Hikari pool | `spring.datasource.hikari.maximum-pool-size` | 16 | ≥ writer + worker + dư vài connection cho API tiến độ |
 
 Muốn tăng tốc (khi bên thứ ba cho phép) chỉ cần tăng `import.api.max-concurrent` — không phải đổi kích thước thread pool.
 
-Ước lượng tổng (happy case, cần đo thật ở Phase 5): giai đoạn 1 ~20–60 s, giai đoạn 2 ~1–3 phút, chạy chồng lên nhau.
+Ước lượng giai đoạn 2 (happy case, đo thật ở Phase 3/5): ~1–3 phút, chạy chồng lên giai đoạn 1.
+
+### Số đo giai đoạn 1 (2026-09-27)
+
+1 triệu dòng (147 MB, 1000 dòng sai), MySQL 8.4 trong Docker Desktop (Testcontainers), Mac arm64 8 CPU, chunk 1000:
+
+| Cấu hình | Thời gian | Dòng/giây |
+|---|---|---|
+| 3 writer, **thiếu** `rewriteBatchedStatements` | 135 s | ~7.400 |
+| 1 writer | 35 s | ~28.000 |
+| 3 writer | 16 s | ~60.000 |
+| **6 writer (mặc định)** | **11–12 s** | **~85.000** |
+| 12 writer | 11 s | ~87.000 — không nhanh hơn 6 |
+
+Bài học:
+- `rewriteBatchedStatements` quyết định nhiều hơn số thread (×8). Tham số này đặt ở `spring.datasource.hikari.data-source-properties`, **không** đặt trong URL: khi test, Testcontainers thay URL → tham số trong URL biến mất (đây chính là nguyên nhân của dòng 135 s).
+- Quá điểm bão hoà (~6), thêm thread không nhanh hơn — nút cổ chai là MySQL, không phải số thread.
 
 ## 4. Mô hình dữ liệu (MySQL)
 
@@ -174,7 +190,7 @@ Claude code; bạn tự chạy compose / deploy.
 | 2 | Giai đoạn 1: upload, streaming parse, validate, batch insert staging |
 | 3 | Giai đoạn 2: worker virtual thread claim `SKIP LOCKED`, bulk API client + `Semaphore` + retry, ghi bảng đích |
 | 4 | API tiến độ / lỗi / retry-failed |
-| 5 | Unit test + script sinh CSV 1 triệu dòng + đo thời gian thực tế, điền lại số liệu mục 3 |
+| 5 | Đo toàn bộ (giai đoạn 1 + 2) với 1 triệu dòng, điền lại số liệu mục 3. (Script `scripts/gen-customers-csv.py` và số đo giai đoạn 1 đã làm sớm ở Phase 2) |
 | 6 | (Để sau) Manifest K8s trong `deploy/base`, thêm service vào matrix CI (lưu ý: job `test` phải dùng JDK 25 cho ImportService, JDK 17 cho service cũ) |
 
 ## 9. Cần bạn duyệt
