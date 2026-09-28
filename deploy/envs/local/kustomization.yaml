@@ -8,6 +8,7 @@ namespace: mcservice
 resources:
   - ../../base
   - httproute.yaml
+  - thirdparty-mock.yaml
 
 images:
   - name: userservice
@@ -18,4 +19,12 @@ images:
     newTag: 401a056fb1fd7a26476a79cb73523a9ae64d9845
   - name: paymentservice
     newName: ghcr.io/thinhphamduc/mcservice-paymentservice
+    newTag: 401a056fb1fd7a26476a79cb73523a9ae64d9845
+  # Import CSV. Tag ban đầu chưa có image trên GHCR: sau khi merge vào main, CI build xong sẽ tự đổi
+  # mọi dòng newTag thành SHA mới (~6 phút). Trong lúc chờ, 2 pod này báo ImagePullBackOff là bình thường.
+  - name: importservice
+    newName: ghcr.io/thinhphamduc/mcservice-importservice
+    newTag: 401a056fb1fd7a26476a79cb73523a9ae64d9845
+  - name: thirdpartymock
+    newName: ghcr.io/thinhphamduc/mcservice-thirdpartymock
     newTag: 401a056fb1fd7a26476a79cb73523a9ae64d9845

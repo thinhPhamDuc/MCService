@@ -23,3 +23,13 @@ spec:
       backendRefs:
         - name: orderservice
           port: 8082
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /imports       # ImportService: upload CSV, tiến độ, lỗi, retry
+      backendRefs:
+        - name: importservice
+          port: 8084
+      # Upload file 150 MB lâu hơn 1 request API thường; không đặt thì Envoy cắt request sau 15 giây
+      timeouts:
+        request: 120s

@@ -1,0 +1,44 @@
+package com.app.importservice.config;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.boot.context.properties.source.MapConfigurationPropertySource;
+
+import java.time.Duration;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+class ImportPropertiesTest {
+
+    private static ImportProperties bind(Map<String, String> properties) {
+        return new Binder(new MapConfigurationPropertySource(properties)).bindOrCreate("import", ImportProperties.class);
+    }
+
+    @Test
+    void missingIngestConfigUsesDefaults() {
+        ImportProperties.Ingest ingest = bind(Map.of()).ingest();
+
+        assertThat(ingest).isEqualTo(new ImportProperties.Ingest(6, 1000, 10, 1, Duration.ofSeconds(10), Duration.ofMinutes(2), Duration.ofMinutes(30)));
+    }
+
+    @Test
+    void missingProcessAndApiConfigUsesDefaults() {
+        ImportProperties properties = bind(Map.of());
+
+        assertThat(properties.process().enabled()).isTrue();
+        assertThat(properties.process().workers()).isEqualTo(8);
+        assertThat(properties.process().claimSize()).isEqualTo(500);
+        assertThat(properties.api().batchSize()).isEqualTo(100);
+        assertThat(properties.api().maxConcurrent()).isEqualTo(16);
+        assertThat(properties.api().maxAttempts()).isEqualTo(3);
+    }
+
+    @Test
+    void configuredValueOverridesOnlyThatField() {
+        ImportProperties.Ingest ingest = bind(Map.of("import.ingest.writers", "3")).ingest();
+
+        assertThat(ingest.writers()).isEqualTo(3);
+        assertThat(ingest.chunkSize()).isEqualTo(1000);
+    }
+}

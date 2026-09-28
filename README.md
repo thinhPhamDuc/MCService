@@ -5,6 +5,8 @@
 | UserService    | 8081 | `POST /auth/login`, `GET /auth/validate`          |
 | OrderService   | 8082 | `POST /orders`, `GET /orders`, `GET /orders/{id}` |
 | PaymentService | 8083 | `POST /payments`, `POST /admin/chaos`             |
+| ImportService  | 8084 | Import CSV lớn (đang làm — `docs/csv-import-design.md`) |
+| ThirdPartyMock | 8090 | API bên thứ ba giả lập: `POST /v1/verify/bulk`, `POST /admin/chaos` |
 
 Tất cả service đều có `GET /actuator/health`.
 

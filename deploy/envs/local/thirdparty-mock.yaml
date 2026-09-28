@@ -1,0 +1,52 @@
+# API bên thứ ba GIẢ — chỉ có ở môi trường local, nên nằm trong overlay chứ không nằm trong base.
+# Môi trường thật không deploy file này mà trỏ IMPORT_API_BASE_URL tới API thật.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: thirdparty-mock
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: thirdparty-mock
+  template:
+    metadata:
+      labels:
+        app: thirdparty-mock
+    spec:
+      containers:
+        - name: thirdparty-mock
+          image: thirdpartymock
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8090
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 384Mi
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8090
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8090
+            periodSeconds: 5
+---
+# ClusterIP: chỉ ImportService trong cluster gọi được. Muốn chỉnh /admin/chaos từ máy thì port-forward:
+#   kubectl port-forward -n mcservice svc/thirdparty-mock 8090:8090
+apiVersion: v1
+kind: Service
+metadata:
+  name: thirdparty-mock
+spec:
+  selector:
+    app: thirdparty-mock
+  ports:
+    - port: 8090
+      targetPort: 8090
