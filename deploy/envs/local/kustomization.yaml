@@ -13,18 +13,18 @@ resources:
 images:
   - name: userservice
     newName: ghcr.io/thinhphamduc/mcservice-userservice
-    newTag: 401a056fb1fd7a26476a79cb73523a9ae64d9845
+    newTag: ec3b80a373a9d5c14be8460a459145a080578675
   - name: orderservice
     newName: ghcr.io/thinhphamduc/mcservice-orderservice
-    newTag: 401a056fb1fd7a26476a79cb73523a9ae64d9845
+    newTag: ec3b80a373a9d5c14be8460a459145a080578675
   - name: paymentservice
     newName: ghcr.io/thinhphamduc/mcservice-paymentservice
-    newTag: 401a056fb1fd7a26476a79cb73523a9ae64d9845
+    newTag: ec3b80a373a9d5c14be8460a459145a080578675
   # Import CSV. Tag ban đầu chưa có image trên GHCR: sau khi merge vào main, CI build xong sẽ tự đổi
   # mọi dòng newTag thành SHA mới (~6 phút). Trong lúc chờ, 2 pod này báo ImagePullBackOff là bình thường.
   - name: importservice
     newName: ghcr.io/thinhphamduc/mcservice-importservice
-    newTag: 401a056fb1fd7a26476a79cb73523a9ae64d9845
+    newTag: ec3b80a373a9d5c14be8460a459145a080578675
   - name: thirdpartymock
     newName: ghcr.io/thinhphamduc/mcservice-thirdpartymock
-    newTag: 401a056fb1fd7a26476a79cb73523a9ae64d9845
+    newTag: ec3b80a373a9d5c14be8460a459145a080578675
