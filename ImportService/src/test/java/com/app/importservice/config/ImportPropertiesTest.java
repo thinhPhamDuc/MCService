@@ -19,7 +19,7 @@ class ImportPropertiesTest {
     void missingIngestConfigUsesDefaults() {
         ImportProperties.Ingest ingest = bind(Map.of()).ingest();
 
-        assertThat(ingest).isEqualTo(new ImportProperties.Ingest(6, 1000, 10, 1, Duration.ofMinutes(10)));
+        assertThat(ingest).isEqualTo(new ImportProperties.Ingest(6, 1000, 10, 1, Duration.ofSeconds(10), Duration.ofMinutes(2)));
     }
 
     @Test

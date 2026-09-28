@@ -1,6 +1,6 @@
 # Thiết kế: Import CSV ~1 triệu dòng (ImportService)
 
-> Trạng thái: **Đã duyệt** — Phase 1, 2 (2026-09-27), 3 (2026-09-28) xong. Đã làm gì + lập luận thông số: [`csv-import-implementation.md`](csv-import-implementation.md). Nhánh: `feature/csv-import`.
+> Trạng thái: **Đã duyệt** — Phase 1, 2 (2026-09-27), 3, 4 (2026-09-28) xong. Đã làm gì + lập luận thông số: [`csv-import-implementation.md`](csv-import-implementation.md). Nhánh: `feature/csv-import`.
 
 ## 0. Quyết định đã chốt
 
@@ -168,7 +168,7 @@ Mặc định trả ngay, không lỗi. Có sẵn nút chỉnh (giống `/admin/
 | API lỗi 5xx / timeout | Tối đa 3 lần gọi (1 lần đầu + 2 lần thử lại), chờ 200 ms → 400 ms; hết lượt → dòng `FAILED` + lý do |
 | API trả 429 | Chờ theo `Retry-After` rồi thử lại, không tính vào số lần retry |
 | Pod chết giữa giai đoạn 2 | Dòng `PROCESSING` có `claimed_at` quá 5 phút được coi là bỏ dở → worker khác claim lại |
-| Pod chết giữa giai đoạn 1 | Job `INGESTING` quá hạn → `FAILED`, upload lại (giai đoạn 1 chỉ vài chục giây; muốn resume cần lưu file trên volume bền — ghi nhận là giới hạn) |
+| Pod chết giữa giai đoạn 1 | Job `INGESTING` không có nhịp tim quá 2 phút (Phase 4) → `FAILED`, upload lại (giai đoạn 1 chỉ vài chục giây; muốn resume cần lưu file trên volume bền — ghi nhận là giới hạn) |
 | Chạy lại dòng lỗi | `POST /imports/{jobId}/retry-failed` đặt `FAILED` (lỗi API) → `NEW` |
 
 ## 7. API của ImportService

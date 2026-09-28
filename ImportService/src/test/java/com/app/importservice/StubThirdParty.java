@@ -7,6 +7,8 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
@@ -42,6 +44,7 @@ public class StubThirdParty implements AutoCloseable {
 
     private final HttpServer server;
     private final AtomicInteger requests = new AtomicInteger();
+    private final Queue<String> sentIds = new ConcurrentLinkedQueue<>();
     private volatile Function<List<String>, Reply> handler = Reply::ok;
 
     public StubThirdParty() throws IOException {
@@ -52,6 +55,7 @@ public class StubThirdParty implements AutoCloseable {
             String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             Matcher m = EXTERNAL_ID.matcher(body);
             List<String> ids = m.results().map(r -> r.group(1)).toList();
+            sentIds.addAll(ids);
             Reply reply = handler.apply(ids);
             if (reply.retryAfter() != null) {
                 exchange.getResponseHeaders().set("Retry-After", reply.retryAfter());
@@ -73,6 +77,11 @@ public class StubThirdParty implements AutoCloseable {
 
     public void respondWith(Function<List<String>, Reply> handler) {
         this.handler = handler;
+    }
+
+    /** Mọi externalId đã nhận được (kể cả các lần thử lại), theo thứ tự đến. */
+    public List<String> sentIds() {
+        return List.copyOf(sentIds);
     }
 
     public int requestCount() {

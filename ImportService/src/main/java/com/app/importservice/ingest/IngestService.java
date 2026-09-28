@@ -105,6 +105,7 @@ public class IngestService {
              CSVParser parser = FORMAT.parse(reader)) {
 
             CustomerCsv.checkHeader(parser.getHeaderNames());
+            long nextHeartbeat = System.nanoTime() + config.heartbeatInterval().toNanos();
             List<StagedRow> chunk = new ArrayList<>(config.chunkSize());
             for (CSVRecord record : parser) {
                 StagedRow row = CustomerCsv.toStagedRow(++total, record.toList());
@@ -115,6 +116,12 @@ public class IngestService {
                 if (chunk.size() == config.chunkSize()) {
                     submitChunk(writers, inFlight, failure, jobId, chunk);
                     chunk = new ArrayList<>(config.chunkSize());
+                    // Nhịp tim theo THỜI GIAN (không phải mỗi chunk): 1 triệu dòng chỉ ~1 lần ghi thay vì 1000 lần.
+                    // Writer bị treo → reader kẹt ở Semaphore → hết nhịp tim → sweeper coi là chết: đúng ý nghĩa.
+                    if (System.nanoTime() >= nextHeartbeat) {
+                        jobs.heartbeat(jobId);
+                        nextHeartbeat = System.nanoTime() + config.heartbeatInterval().toNanos();
+                    }
                 }
             }
             if (!chunk.isEmpty()) {

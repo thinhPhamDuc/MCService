@@ -11,7 +11,7 @@
 | 1 | Khung ImportService + ThirdPartyMock, schema MySQL, docker compose | ✅ 2026-09-27 | `0533382` |
 | 2 | Upload + ingest CSV vào bảng staging | ✅ 2026-09-27 | `95fa968` (+ thông số / benchmark 2026-09-28) |
 | 3 | Worker (virtual thread) gọi bulk API, ghi bảng `customer` | ✅ 2026-09-28 | `9869def` |
-| 4 | API tiến độ / danh sách lỗi / retry-failed | ⏳ | |
+| 4 | API tiến độ / danh sách lỗi / retry-failed + heartbeat cho ingest | ✅ 2026-09-28 | xem `git log` |
 | 5 | Đo toàn bộ giai đoạn 1 + 2 | ⏳ | |
 | 6 | K8s + CI | ⏳ | |
 
@@ -133,7 +133,7 @@ import.ingest.writers=6
 import.ingest.chunk-size=1000
 import.ingest.queue-capacity=10
 import.ingest.max-concurrent-jobs=1
-import.ingest.stale-after=10m
+import.ingest.stale-after=10m     # Phase 4: đổi thành 2m + heartbeat-interval=10s (mục 5)
 ```
 
 Mỗi con số đến từ một trong ba nguồn sau. Cần phân biệt rõ vì mức tin cậy khác nhau:
@@ -144,7 +144,7 @@ Mỗi con số đến từ một trong ba nguồn sau. Cần phân biệt rõ v�
 | `chunk-size=1000` | Lý thuyết chi phí cố định + thông lệ ngành + bạn đề xuất | Trung bình, **chưa đo** |
 | `queue-capacity=10` | Lý thuyết producer–consumer / backpressure | Trung bình, **chưa đo** |
 | `max-concurrent-jobs=1` | Suy ra từ số đo `writers` + lý thuyết hàng đợi | Trung bình, chưa đo trực tiếp |
-| `stale-after=10m` | Nguyên tắc chọn timeout cho việc phát hiện lỗi | Không liên quan tốc độ; **có điểm yếu** (xem dưới) |
+| `stale-after` (10m → 2m ở Phase 4) | Nguyên tắc chọn timeout cho việc phát hiện lỗi + heartbeat | Không liên quan tốc độ; điểm yếu ban đầu đã sửa ở Phase 4 |
 
 ### 1. `writers=6`: thêm thread chỉ nhanh hơn cho tới khi chạm nút cổ chai
 
@@ -199,13 +199,14 @@ Mỗi con số đến từ một trong ba nguồn sau. Cần phân biệt rõ v�
 - Timeout quá ngắn thì **báo nhầm**: đánh FAILED một job vẫn đang chạy bình thường, gây hậu quả nặng.
 - Timeout quá dài thì **phát hiện chậm**: job thật sự đã chết nhưng người dùng phải chờ lâu mới biết, hậu quả nhẹ (chỉ là chờ thêm).
 - Vì báo nhầm nguy hiểm hơn, timeout nên **lớn hơn nhiều lần thời gian chạy bình thường**. 1 triệu dòng mất 11–35 giây, 10 phút cho biên an toàn khoảng 17–50 lần.
-- ⚠️ **Điểm yếu:** hiện tại sweeper tính từ `started_at` (lúc job **bắt đầu**), không phải lúc job **có tiến triển gần nhất**. Một file rất lớn trên máy chậm, ví dụ 20 triệu dòng ở 28.000 dòng/giây ≈ 12 phút, sẽ bị đánh FAILED nhầm. Cách đúng là **heartbeat**: mỗi chunk ghi xong thì cập nhật một cột `heartbeat_at`, và sweeper xét "không có heartbeat trong X phút". Nên sửa ở Phase 4.
+- ⚠️ **Điểm yếu (bản Phase 2):** sweeper tính từ `started_at` (lúc job **bắt đầu**), không phải lúc job **có tiến triển gần nhất**. Một file rất lớn trên máy chậm, ví dụ 20 triệu dòng ở 28.000 dòng/giây ≈ 12 phút, sẽ bị đánh FAILED nhầm.
+- ✅ **Đã sửa ở Phase 4 bằng heartbeat** — xem mục Phase 4. Khi đo "im lặng bao lâu" thay vì "chạy bao lâu", timeout không còn phụ thuộc kích thước file nên giảm được xuống 2 phút.
 
 ### Nếu không cấu hình gì thì giá trị là bao nhiêu?
 
 | Trường hợp | Trước khi sửa | Sau khi sửa (2026-09-28) |
 |---|---|---|
-| Không có dòng `import.ingest.*` nào | `ingest = null` → **app lỗi khi khởi động** | Dùng giá trị trong code (`@DefaultValue`): 6 / 1000 / 10 / 1 / 10m |
+| Không có dòng `import.ingest.*` nào | `ingest = null` → **app lỗi khi khởi động** | Dùng giá trị trong code (`@DefaultValue`): 6 / 1000 / 10 / 1 / 10s / 2m (từ Phase 4) |
 | Có 1 vài dòng, thiếu dòng khác | Dòng thiếu nhận **0** → `writers=0` → app lỗi | Dòng thiếu nhận giá trị mặc định ở trên |
 
 Kiểm chứng: `ImportPropertiesTest`. Các giá trị mặc định **của thư viện** liên quan cũng đáng biết:
@@ -356,4 +357,109 @@ API bên thứ ba trong test là `StubThirdParty` (HTTP server thật trong JDK,
 - **Bộ đếm có thể lệch** khi 1 chunk xử lý lâu hơn `stale-after` (xem mục chống ghi trùng).
 - **Dòng "độc"**: dòng làm worker chết mỗi lần xử lý sẽ bị claim lại mãi (`attempts` tăng dần nhưng chưa có giới hạn).
 - **Chưa đo tốc độ giai đoạn 2** với 1 triệu dòng và `ThirdPartyMock` thật — để Phase 5.
-- Chưa có API xem danh sách dòng lỗi / chạy lại dòng lỗi, và `ingest.stale-after` vẫn tính từ lúc bắt đầu (chưa có heartbeat) — Phase 4.
+- ~~Chưa có API xem danh sách dòng lỗi / chạy lại dòng lỗi, `ingest.stale-after` tính từ lúc bắt đầu~~ → đã làm ở Phase 4.
+
+
+---
+
+## Phase 4 — Theo dõi, xử lý lỗi, heartbeat
+
+### Mục đích
+
+Sau Phase 3 hệ thống đã chạy được, nhưng người dùng chưa trả lời được 3 câu hỏi vận hành:
+1. **Job đang tới đâu, còn bao lâu?** → tiến độ %, thời gian chạy, tốc độ.
+2. **Dòng nào lỗi, vì sao?** → danh sách dòng lỗi, phân loại lỗi.
+3. **Bên thứ ba sập 10 phút làm 50.000 dòng lỗi — giờ làm sao?** → chạy lại riêng các dòng lỗi API, không phải upload lại cả file.
+
+Thêm vào đó là sửa điểm yếu `stale-after` của ingest đã ghi nhận ở Phase 2.
+
+### API mới
+
+| Method | Path | Trả về |
+|---|---|---|
+| GET | `/imports/{jobId}` | Như cũ + `progressPercent`, `durationSeconds`, `rowsPerSecond` |
+| GET | `/imports/{jobId}/errors?limit=100&afterRowNo=0` | `items` (`rowNo`, `externalId`, `reason` = `INVALID` / `API`, `error`) + `nextAfterRowNo` để lấy trang sau (null = hết) |
+| POST | `/imports/{jobId}/retry-failed` | `{jobId, retriedRows, status}`; **409** nếu job không ở `COMPLETED_WITH_ERRORS` |
+
+### Tiến độ
+
+```
+progressPercent = (processedRows + invalidRows) / totalRows × 100
+rowsPerSecond   = (processedRows + invalidRows) / durationSeconds
+```
+
+- Dòng sai dữ liệu (`invalidRows`) được tính là "đã xong" vì nó không bao giờ đi tiếp giai đoạn 2. Nếu không tính thì job xong rồi mà vẫn hiện 99,9%.
+- `durationSeconds` tính **trong MySQL** (`TIMESTAMPDIFF(... COALESCE(finished_at, NOW(3)))`). Nếu app tự lấy `LocalDateTime.now()` sẽ lệch múi giờ: MySQL trong container dùng UTC, còn app chạy trên Mac dùng +07 → số giây bị lệch 7 tiếng.
+
+### Danh sách lỗi: 2 loại lỗi, phân biệt bằng `attempts`
+
+| `reason` | Nghĩa | Nhận biết | Chạy lại được không? |
+|---|---|---|---|
+| `INVALID` | Sai dữ liệu lúc ingest (email sai, thiếu cột...) | `attempts = 0`: chưa từng được worker nhận | ❌ Gửi lại vẫn sai → sửa file, upload lại |
+| `API` | Gửi API thất bại (hết lượt thử, 4xx...) | `attempts ≥ 1` | ✅ Sau khi bên thứ ba hết sự cố |
+
+**Phân trang keyset** (`WHERE row_no > afterRowNo ORDER BY row_no LIMIT n`) thay vì `OFFSET`:
+
+| | `LIMIT 100 OFFSET 900000` | `WHERE row_no > 900000 LIMIT 100` |
+|---|---|---|
+| MySQL làm gì | Đọc 900.100 dòng theo index rồi **bỏ** 900.000 | **Nhảy thẳng** tới row_no 900.000 trong index `(status, job_id, row_no)` |
+| Trang càng sâu | Càng chậm | Nhanh như trang đầu |
+| Dữ liệu thay đổi giữa 2 lần gọi | Có thể trùng / sót dòng | Không trùng / sót |
+
+Cái giá của keyset: không nhảy thẳng được tới "trang 57", chỉ đi tuần tự trang sau — đủ cho việc xem / xuất danh sách lỗi.
+
+### Chạy lại dòng lỗi (`RetryFailedService`)
+
+```
+POST /imports/1/retry-failed
+  TX: SELECT status FROM import_job WHERE id = 1 FOR UPDATE      ← khoá job, 2 lệnh retry cùng lúc chạy lần lượt
+      status != COMPLETED_WITH_ERRORS → 409
+      UPDATE import_row SET status='NEW', error=NULL WHERE status='FAILED' AND job_id=1 AND attempts > 0
+      UPDATE import_job SET status='PROCESSING', finished_at=NULL,
+                            processed_rows -= n, failed_rows -= n
+  COMMIT
+→ worker nền thấy dòng NEW, xử lý như bình thường → job tự kết thúc lại (Phase 3 bước ⑤)
+```
+
+Vì sao chỉ cho retry khi `COMPLETED_WITH_ERRORS`:
+- `PROCESSING`: job còn đang chạy, số dòng lỗi còn thay đổi; retry lúc này thì bộ đếm bị trừ trong khi worker vẫn đang cộng → sai.
+- `COMPLETED`: không có lỗi để chạy lại.
+- `FAILED`: lỗi cả file (header sai, ingest hỏng) → phải upload lại.
+
+Trừ `processed_rows` và `failed_rows` đi `n` vì worker sẽ **cộng lại** khi xử lý xong các dòng này. Không trừ thì job 1.000 dòng sẽ báo `processedRows = 1.100`.
+
+### Heartbeat cho ingest
+
+```
+Phase 2:  sweeper hỏi "job BẮT ĐẦU cách đây > 10 phút?"      → file to chạy lâu bị giết nhầm
+Phase 4:  sweeper hỏi "job IM LẶNG (không nhịp tim) > 2 phút?" → file to đến đâu cũng không bị giết nhầm
+```
+
+| Thông số | Giá trị | Lập luận |
+|---|---|---|
+| `import.ingest.heartbeat-interval` | 10 s | Reader ghi `heartbeat_at` **theo thời gian**, không theo chunk: 1 triệu dòng (~8 s) chỉ ~1 lần ghi thay vì 1000 lần cập nhật cùng 1 dòng `import_job` |
+| `import.ingest.stale-after` | 2 m (trước: 10 m) | = 12 nhịp tim liên tiếp bị lỡ. Một lần GC dừng hay MySQL chậm vài giây không đủ để bị giết nhầm; pod chết thật thì 2–3 phút sau (sweeper chạy mỗi phút) job được đánh FAILED |
+
+Nhịp tim do **reader** ghi, ngay sau khi giao được 1 chunk. Nếu writer bị treo (DB treo), reader kẹt ở Semaphore → không ghi nhịp tim → sweeper coi là chết. Đúng ý nghĩa: **không tiến triển = chết**, dù thread vẫn còn sống.
+
+Đây cũng là cách K8s làm với liveness probe (`periodSeconds` × `failureThreshold`) và cách các hệ phân tán (ZooKeeper session, Kafka consumer `session.timeout.ms`) phát hiện thành viên đã chết.
+
+### Test thêm
+
+| Test | Kiểm chứng |
+|---|---|
+| `IngestServiceTest.staleDetectionLooksAtHeartbeatNotStartTime` | Job bắt đầu 1 giờ trước nhưng có nhịp tim → **không** bị coi là chết; job im lặng 5 phút → bị coi là chết |
+| `IngestServiceTest.ingestRecordsHeartbeat` | Ingest ghi `heartbeat_at` |
+| `ImportJobControllerTest.progressCountsInvalidRowsAsDone` | 2 dòng sai / 10 dòng, worker tắt → 20% |
+| `ImportJobControllerTest.errorsArePagedWithKeyset` | Trang 1: dòng 6, 7 + `nextAfterRowNo=7`; trang 2: dòng 8 + `null` |
+| `ImportJobControllerTest.retryFailedOnRunningJobReturns409` | Job đang PROCESSING → 409 |
+| `ImportJobControllerTest.retryFailedResetsOnlyApiFailures` | Chỉ dòng lỗi API về NEW, dòng sai dữ liệu giữ FAILED, bộ đếm bị trừ đúng |
+| `ProcessServiceTest.retryFailedReprocessesApiFailuresAfterOutageButNotInvalidRows` | Toàn luồng: sự cố → 100 dòng lỗi → hết sự cố → retry → 300 khách hàng, `failedRows = 0`, vẫn COMPLETED_WITH_ERRORS vì còn 2 dòng sai dữ liệu |
+
+Sửa 1 test cũ: `concurrentWorkersNeverClaimTheSameRow` từng kiểm tra "đúng 50 request" và thỉnh thoảng ra 51. Lý do: khi 8 luồng cùng claim, phần cuối của job có thể bị chia 250 + 250 → 3 + 3 request thay vì 5. Số request **không** phải điều cần đảm bảo; điều cần đảm bảo là **mỗi khách hàng được gửi đúng 1 lần** → test giờ kiểm tra 5.000 `externalId` gửi đi, không trùng.
+
+### Còn lại (chưa làm)
+
+- Lúc tắt service, trả ngay các dòng worker đang giữ về NEW (hiện phải chờ `process.stale-after` 5 phút).
+- Giới hạn số lần claim cho "dòng độc".
+- Đo tốc độ toàn bộ với 1 triệu dòng — Phase 5.

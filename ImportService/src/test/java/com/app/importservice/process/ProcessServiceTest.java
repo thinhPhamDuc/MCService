@@ -11,6 +11,7 @@ import com.app.importservice.ingest.IngestService;
 import com.app.importservice.job.ImportJob;
 import com.app.importservice.job.ImportJobRepository;
 import com.app.importservice.job.JobStatus;
+import com.app.importservice.job.RetryFailedService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -50,6 +51,8 @@ class ProcessServiceTest {
     private TransactionTemplate tx;
     @Autowired
     private JdbcTemplate jdbc;
+    @Autowired
+    private RetryFailedService retryFailedService;
 
     @TempDir
     Path dir;
@@ -126,6 +129,29 @@ class ProcessServiceTest {
     }
 
     @Test
+    void retryFailedReprocessesApiFailuresAfterOutageButNotInvalidRows() throws Exception {
+        long jobId = ingest(300, 2);
+        // sự cố: batch chứa C-150 lỗi hẳn → 100 dòng FAILED (API) + 2 dòng FAILED (sai dữ liệu)
+        stub.respondWith(ids -> ids.contains("C-150") ? Reply.status(500) : Reply.ok(ids));
+        processAll();
+        assertThat(jobs.findById(jobId).orElseThrow().failedRows()).isEqualTo(100);
+
+        stub.respondWith(Reply::ok); // bên thứ ba đã hết sự cố
+        RetryFailedService.RetryResult result = retryFailedService.retryFailed(jobId);
+        assertThat(result.retriedRows()).isEqualTo(100);
+        assertThat(result.status()).isEqualTo(JobStatus.PROCESSING);
+        processAll();
+
+        ImportJob job = jobs.findById(jobId).orElseThrow();
+        assertThat(job.status()).isEqualTo(JobStatus.COMPLETED_WITH_ERRORS); // vẫn còn 2 dòng sai dữ liệu
+        assertThat(job.processedRows()).isEqualTo(300);
+        assertThat(job.failedRows()).isZero();
+        assertThat(job.invalidRows()).isEqualTo(2);
+        assertThat(countCustomers(jobId)).isEqualTo(300);
+        assertThat(countRows(jobId, "FAILED")).isEqualTo(2);
+    }
+
+    @Test
     void concurrentWorkersNeverClaimTheSameRow() throws Exception {
         long jobId = ingest(5000, 0);
 
@@ -147,7 +173,9 @@ class ProcessServiceTest {
         assertThat(countCustomers(jobId)).isEqualTo(5000);
         assertThat(jdbc.queryForObject("SELECT MAX(attempts) FROM import_row WHERE job_id = ?", Integer.class, jobId))
                 .isEqualTo(1);
-        assertThat(stub.requestCount()).isEqualTo(50);
+        // Số request KHÔNG cố định (khi chạy song song, phần cuối có thể bị chia 250 + 250 → 3 + 3 request),
+        // nhưng mỗi khách hàng phải được gửi sang API đúng 1 lần
+        assertThat(stub.sentIds()).hasSize(5000).doesNotHaveDuplicates();
     }
 
     @Test

@@ -153,6 +153,39 @@ public class ImportRowRepository {
                 Boolean.class, jobId));
     }
 
+    /**
+     * Dòng FAILED có 2 loại, phân biệt bằng {@code attempts} (số lần worker đã nhận dòng):
+     * INVALID = sai dữ liệu lúc ingest (attempts = 0, chưa từng gửi API); API = gửi API thất bại (attempts >= 1).
+     */
+    public enum FailureReason {
+        INVALID, API
+    }
+
+    public record FailedRow(int rowNo, String externalId, FailureReason reason, String error) {
+    }
+
+    /**
+     * Phân trang kiểu "keyset": lấy dòng có row_no > afterRowNo thay vì OFFSET. OFFSET 900000 bắt MySQL đọc rồi bỏ
+     * 900.000 dòng; keyset nhảy thẳng tới vị trí nhờ index (status, job_id, row_no) → trang nào cũng nhanh như nhau.
+     */
+    public List<FailedRow> findFailed(long jobId, int afterRowNo, int limit) {
+        return jdbc.query("""
+                        SELECT row_no, external_id, attempts, error FROM import_row
+                        WHERE status = 'FAILED' AND job_id = ? AND row_no > ?
+                        ORDER BY row_no
+                        LIMIT ?
+                        """,
+                (rs, i) -> new FailedRow(rs.getInt("row_no"), rs.getString("external_id"),
+                        rs.getInt("attempts") == 0 ? FailureReason.INVALID : FailureReason.API, rs.getString("error")),
+                jobId, afterRowNo, limit);
+    }
+
+    /** Dòng lỗi API → NEW để worker xử lý lại. Dòng sai dữ liệu (attempts = 0) giữ nguyên. */
+    public int resetApiFailures(long jobId) {
+        return jdbc.update("UPDATE import_row SET status = 'NEW', error = NULL, claimed_at = NULL "
+                + "WHERE status = 'FAILED' AND job_id = ? AND attempts > 0", jobId);
+    }
+
     private static String placeholders(int count) {
         return String.join(",", Collections.nCopies(count, "?"));
     }

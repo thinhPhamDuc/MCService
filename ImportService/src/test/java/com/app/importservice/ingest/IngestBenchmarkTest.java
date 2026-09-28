@@ -92,6 +92,6 @@ class IngestBenchmarkTest {
     }
 
     private static ImportProperties.Ingest config(int writers, int chunk, int queue) {
-        return new ImportProperties.Ingest(writers, chunk, queue, 1, Duration.ofMinutes(10));
+        return new ImportProperties.Ingest(writers, chunk, queue, 1, Duration.ofSeconds(10), Duration.ofMinutes(2));
     }
 }

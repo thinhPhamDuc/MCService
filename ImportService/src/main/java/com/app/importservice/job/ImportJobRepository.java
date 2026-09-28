@@ -28,7 +28,9 @@ public class ImportJobRepository {
             rs.getString("error"),
             rs.getObject("created_at", LocalDateTime.class),
             rs.getObject("started_at", LocalDateTime.class),
-            rs.getObject("finished_at", LocalDateTime.class));
+            rs.getObject("heartbeat_at", LocalDateTime.class),
+            rs.getObject("finished_at", LocalDateTime.class),
+            rs.getObject("duration_seconds", Long.class));
 
     private final JdbcTemplate jdbc;
 
@@ -49,11 +51,14 @@ public class ImportJobRepository {
     }
 
     public Optional<ImportJob> findById(long id) {
-        return jdbc.query("SELECT * FROM import_job WHERE id = ?", MAPPER, id).stream().findFirst();
+        return jdbc.query("""
+                SELECT *, TIMESTAMPDIFF(SECOND, started_at, COALESCE(finished_at, NOW(3))) AS duration_seconds
+                FROM import_job WHERE id = ?
+                """, MAPPER, id).stream().findFirst();
     }
 
     public void markIngesting(long id) {
-        jdbc.update("UPDATE import_job SET status = ?, started_at = NOW(3) WHERE id = ?",
+        jdbc.update("UPDATE import_job SET status = ?, started_at = NOW(3), heartbeat_at = NOW(3) WHERE id = ?",
                 JobStatus.INGESTING.name(), id);
     }
 
@@ -96,16 +101,41 @@ public class ImportJobRepository {
                 processed, failed, id);
     }
 
+    /**
+     * Đưa job đã xong-có-lỗi về PROCESSING để worker xử lý lại {@code retried} dòng, trừ các dòng đó khỏi bộ đếm
+     * (worker sẽ cộng lại khi xử lý xong). Gọi trong transaction đã khoá job ({@link #lockStatus}).
+     */
+    public void reopenForRetry(long id, int retried) {
+        jdbc.update("""
+                UPDATE import_job
+                SET status = ?, finished_at = NULL, error = NULL,
+                    processed_rows = processed_rows - ?, failed_rows = failed_rows - ?
+                WHERE id = ?
+                """, JobStatus.PROCESSING.name(), retried, retried, id);
+    }
+
+    /** SELECT ... FOR UPDATE: khoá dòng job tới hết transaction, 2 lệnh retry cùng lúc sẽ chạy lần lượt. */
+    public Optional<JobStatus> lockStatus(long id) {
+        return jdbc.queryForList("SELECT status FROM import_job WHERE id = ? FOR UPDATE", String.class, id)
+                .stream().findFirst().map(JobStatus::valueOf);
+    }
+
     /** Chỉ kết thúc job đang PROCESSING: 2 worker cùng gọi thì chỉ 1 người đổi được (trả về true). */
     public boolean finishIfProcessing(long id, JobStatus status) {
         return jdbc.update("UPDATE import_job SET status = ?, finished_at = NOW(3) WHERE id = ? AND status = ?",
                 status.name(), id, JobStatus.PROCESSING.name()) == 1;
     }
 
-    /** Job INGESTING bắt đầu trước (now - staleAfter): pod xử lý nó nhiều khả năng đã chết. */
+    /** Ingest còn sống: reader gọi định kỳ (import.ingest.heartbeat-interval). */
+    public void heartbeat(long id) {
+        jdbc.update("UPDATE import_job SET heartbeat_at = NOW(3) WHERE id = ? AND status = ?",
+                id, JobStatus.INGESTING.name());
+    }
+
+    /** Job INGESTING không có nhịp tim trong (now - staleAfter): pod xử lý nó nhiều khả năng đã chết. */
     public List<Long> findStaleIngesting(Duration staleAfter) {
         return jdbc.queryForList(
-                "SELECT id FROM import_job WHERE status = ? AND started_at < NOW(3) - INTERVAL ? SECOND",
+                "SELECT id FROM import_job WHERE status = ? AND COALESCE(heartbeat_at, started_at) < NOW(3) - INTERVAL ? SECOND",
                 Long.class, JobStatus.INGESTING.name(), staleAfter.toSeconds());
     }
 

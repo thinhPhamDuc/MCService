@@ -15,6 +15,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -116,6 +117,30 @@ class IngestServiceTest {
         ImportJob job = jobs.findById(jobId).orElseThrow();
         assertThat(job.status()).isEqualTo(JobStatus.COMPLETED);
         assertThat(job.totalRows()).isZero();
+    }
+
+    @Test
+    void staleDetectionLooksAtHeartbeatNotStartTime() {
+        long alive = jobs.create("alive.csv");
+        long dead = jobs.create("dead.csv");
+        jobs.markIngesting(alive);
+        jobs.markIngesting(dead);
+        // cả 2 bắt đầu 1 giờ trước; "alive" vẫn có nhịp tim vừa xong, "dead" im lặng 5 phút
+        jdbc.update("UPDATE import_job SET started_at = NOW(3) - INTERVAL 1 HOUR WHERE id IN (?, ?)", alive, dead);
+        jdbc.update("UPDATE import_job SET heartbeat_at = NOW(3) - INTERVAL 5 MINUTE WHERE id = ?", dead);
+        jobs.heartbeat(alive);
+
+        assertThat(jobs.findStaleIngesting(Duration.ofMinutes(2))).contains(dead).doesNotContain(alive);
+    }
+
+    @Test
+    void ingestRecordsHeartbeat() throws Exception {
+        Path file = TestCsv.write(dir, "hb.csv", TestCsv.lines(10, 0));
+        long jobId = jobs.create("hb.csv");
+
+        ingestService.run(jobId, file);
+
+        assertThat(jobs.findById(jobId).orElseThrow().heartbeatAt()).isNotNull();
     }
 
     private int countRows(long jobId, String status) {
