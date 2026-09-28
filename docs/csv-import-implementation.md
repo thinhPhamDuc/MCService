@@ -11,7 +11,7 @@
 | 1 | Khung ImportService + ThirdPartyMock, schema MySQL, docker compose | ✅ 2026-09-27 | `0533382` |
 | 2 | Upload + ingest CSV vào bảng staging | ✅ 2026-09-27 | `95fa968` (+ thông số / benchmark 2026-09-28) |
 | 3 | Worker (virtual thread) gọi bulk API, ghi bảng `customer` | ✅ 2026-09-28 | `9869def` |
-| 4 | API tiến độ / danh sách lỗi / retry-failed + heartbeat cho ingest | ✅ 2026-09-28 | xem `git log` |
+| 4 | API tiến độ / danh sách lỗi / retry-failed + heartbeat cho ingest | ✅ 2026-09-28 | `7ed20e4` |
 | 5 | Đo toàn bộ giai đoạn 1 + 2 | ⏳ | |
 | 6 | K8s + CI | ⏳ | |
 
