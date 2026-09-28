@@ -13,7 +13,7 @@
 | 3 | Worker (virtual thread) gọi bulk API, ghi bảng `customer` | ✅ 2026-09-28 | `9869def` |
 | 4 | API tiến độ / danh sách lỗi / retry-failed + heartbeat cho ingest | ✅ 2026-09-28 | `7ed20e4` |
 | 5 | Đo toàn bộ giai đoạn 1 + 2 | ⏭️ bỏ qua (quyết định 2026-09-28) — các con số giai đoạn 2 vẫn là **lập luận, chưa đo** | |
-| 6 | K8s + CI | ✅ 2026-09-28 (chưa merge vào main) | xem `git log` |
+| 6 | K8s + CI | ✅ 2026-09-28 (chưa merge vào main) | `986ac57` |
 
 ---
 
