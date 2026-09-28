@@ -1,6 +1,6 @@
 # Thiết kế: Import CSV ~1 triệu dòng (ImportService)
 
-> Trạng thái: **Đã duyệt** — Phase 1, 2 xong (2026-09-27). Nhánh: `feature/csv-import`.
+> Trạng thái: **Đã duyệt** — Phase 1, 2 xong (2026-09-27). Đã làm gì + lập luận thông số: [`csv-import-implementation.md`](csv-import-implementation.md). Nhánh: `feature/csv-import`.
 
 ## 0. Quyết định đã chốt
 
@@ -118,6 +118,8 @@ Muốn tăng tốc (khi bên thứ ba cho phép) chỉ cần tăng `import.api.m
 Ước lượng giai đoạn 2 (happy case, đo thật ở Phase 3/5): ~1–3 phút, chạy chồng lên giai đoạn 1.
 
 ### Số đo giai đoạn 1 (2026-09-27)
+
+> Lần đo sơ bộ (bảng không được làm rỗng giữa các lần). Số đo chuẩn hơn ngày 2026-09-28 (6 writer: 8,3 s) nằm ở [`csv-import-implementation.md`](csv-import-implementation.md#số-đo-2026-09-28).
 
 1 triệu dòng (147 MB, 1000 dòng sai), MySQL 8.4 trong Docker Desktop (Testcontainers), Mac arm64 8 CPU, chunk 1000:
 
