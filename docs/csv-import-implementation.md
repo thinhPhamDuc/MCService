@@ -10,7 +10,7 @@
 |---|---|---|---|
 | 1 | Khung ImportService + ThirdPartyMock, schema MySQL, docker compose | ✅ 2026-09-27 | `0533382` |
 | 2 | Upload + ingest CSV vào bảng staging | ✅ 2026-09-27 | `95fa968` (+ thông số / benchmark 2026-09-28) |
-| 3 | Worker (virtual thread) gọi bulk API, ghi bảng `customer` | ⏳ | |
+| 3 | Worker (virtual thread) gọi bulk API, ghi bảng `customer` | ✅ 2026-09-28 | xem `git log` |
 | 4 | API tiến độ / danh sách lỗi / retry-failed | ⏳ | |
 | 5 | Đo toàn bộ giai đoạn 1 + 2 | ⏳ | |
 | 6 | K8s + CI | ⏳ | |
@@ -261,3 +261,99 @@ BENCH_FILE=/tmp/customers-1m.csv ./gradlew test --tests '*IngestBenchmarkTest' -
 ```
 
 Benchmark mất khoảng 15 phút và **không chạy** trong `./gradlew test` thường (chỉ chạy khi có biến `BENCH_FILE`).
+
+
+---
+
+## Phase 3 — Process (giai đoạn 2)
+
+### Mục đích
+
+Lấy các dòng `NEW` mà ingest để lại → gửi sang API bên thứ ba theo lô 100 dòng → ghi kết quả vào bảng đích `customer`. Đây là phần **chậm nhất** (phụ thuộc mạng và bên thứ ba), nên phải:
+- **song song nhiều request** nhưng **không vượt quá sức chịu của bên thứ ba**;
+- **chịu được lỗi**: API lỗi tạm thời thì thử lại, lỗi hẳn thì đánh dấu đúng những dòng bị ảnh hưởng, pod chết thì dòng dở dang được làm lại;
+- **không ghi trùng** khi phải làm lại.
+
+### Luồng
+
+```
+          ┌──────────────────────────── 8 worker (virtual thread), mỗi worker lặp: ────────────────────────────┐
+          │                                                                                                      │
+ MySQL    │ ① Tìm job cũ nhất đang PROCESSING còn dòng NEW                                                        │
+ import_job◀──── SELECT ... ORDER BY id LIMIT 1                                                                   │
+          │                                                                                                      │
+ import_row◀──── ② TX NGẮN: SELECT 500 dòng NEW ... FOR UPDATE SKIP LOCKED                                        │
+          │           UPDATE → PROCESSING, claimed_at = NOW, attempts + 1   → COMMIT (nhả lock ngay)             │
+          │                                                                                                      │
+          │ ③ KHÔNG giữ transaction / connection:                                                                │
+          │     500 dòng → 5 request × 100 dòng, mỗi request 1 virtual thread                                    │
+          │     mỗi request phải lấy 1 "thẻ" Semaphore(16) — chung cho CẢ 8 worker                               │
+          │                     ┌─ 2xx ──────────────▶ kết quả                                                   │
+          │   POST /v1/verify/bulk ─ 429 → chờ Retry-After, gửi lại (không tính lượt)            ThirdPartyMock  │
+          │                     ├─ 5xx / timeout → chờ 200 → 400 ms, tối đa 3 lần                                │
+          │                     └─ 4xx khác / hết lượt → cả 100 dòng của request FAILED                          │
+          │                                                                                                      │
+ customer ◀──── ④ TX NGẮN: INSERT customer ... ON DUPLICATE KEY UPDATE id = id                                    │
+ import_row◀────     UPDATE → DONE / FAILED (+ lý do)                                                             │
+ import_job◀────     processed_rows += 500, failed_rows += số lỗi                          → COMMIT              │
+          │                                                                                                      │
+          │ ⑤ Hết dòng NEW / PROCESSING của job? → COMPLETED (hoặc COMPLETED_WITH_ERRORS nếu có dòng FAILED)     │
+          └──────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Từng bước trong code
+
+| Bước | Ở đâu | Làm gì | Vì sao |
+|---|---|---|---|
+| Khởi động worker | `ProcessService.start` (khi app sẵn sàng) | Tạo `import.process.workers` virtual thread chạy `loop()`; không có việc thì ngủ `poll-interval` | Worker chạy nền, không cần ai gọi |
+| ① Chọn job | `ImportJobRepository.findJobWithNewRows` | Job **cũ nhất** đang PROCESSING còn dòng NEW | Người upload trước xong trước (FIFO, cùng lý do `max-concurrent-jobs=1`) |
+| ② Claim | `ImportRowRepository.claim` | `FOR UPDATE SKIP LOCKED` rồi đổi sang PROCESSING, **commit ngay** | `SKIP LOCKED`: worker khác bỏ qua dòng đang bị khoá thay vì đứng chờ → 8 worker / nhiều pod lấy các dòng khác nhau. Commit ngay để lúc gọi API không giữ lock / connection |
+| ③ Gọi API | `ProcessService.callApiInParallel`, `ThirdPartyClient.verifyBulk` | Chia 100 dòng / request, mỗi request 1 virtual thread, qua `Semaphore(api.max-concurrent)`; thử lại theo loại lỗi | Virtual thread: gần như chỉ chờ mạng. Semaphore: giới hạn thật là sức chịu của bên thứ ba, không phải số thread |
+| Kiểm tra kết quả | `ThirdPartyClient.checkMatches` | Số kết quả và thứ tự `externalId` phải khớp với request | Không khớp thì không biết kết quả nào của dòng nào → coi là lỗi, không ghi bừa |
+| ④ Ghi kết quả | `ProcessService.processNextChunk` + `CustomerRepository.insert` | 1 transaction: insert customer, đổi trạng thái dòng, cộng tiến độ job | Hoặc ghi đủ cả 3, hoặc không ghi gì → tiến độ luôn khớp dữ liệu |
+| ⑤ Kết thúc job | `ProcessService.completeIfDone` | Kiểm tra **sau khi commit**; chỉ đổi job đang PROCESSING (`WHERE status = 'PROCESSING'`) | Worker commit cuối cùng chắc chắn thấy mọi chunk đã xong; 2 worker cùng kết thúc thì chỉ 1 người đổi được |
+| Dọn dẹp | `StaleClaimSweeper` (mỗi phút) | Dòng PROCESSING quá `stale-after` → NEW; job hết việc mà chưa đóng → đóng | Pod chết giữa chừng thì việc vẫn được làm tiếp |
+
+### Chống ghi trùng (idempotent)
+
+Insert `customer` và đánh `DONE` nằm trong **cùng 1 transaction**, nên pod chết giữa chừng thì hoặc cả 2 đã ghi, hoặc chưa ghi gì → dòng được làm lại mà không trùng. Trường hợp **có thể** trùng: 1 worker chậm bất thường (ví dụ bị 429 liên tục) giữ chunk quá `stale-after`, sweeper trả dòng về NEW, worker khác xử lý và ghi, rồi worker chậm cũng ghi. Khi đó `INSERT ... ON DUPLICATE KEY UPDATE id = id` gặp `UNIQUE(job_id, row_no)` thì bỏ qua → **bảng customer không trùng**. Mock trả **cùng kết quả cho cùng dữ liệu** nên làm lại không đổi nghĩa dữ liệu. Test: `reprocessingSameRowsDoesNotDuplicateCustomers`.
+
+⚠️ Trong trường hợp hiếm đó, `processed_rows` của job bị cộng 2 lần cho chunk ấy (bộ đếm tiến độ lệch, dữ liệu thì đúng). Với cấu hình mặc định, 1 chunk mất tối đa ~36 s ≪ 5 phút nên thực tế khó xảy ra; ghi vào "Giới hạn đã biết".
+
+### Khác với thiết kế ban đầu
+
+| Thiết kế | Thực tế | Lý do |
+|---|---|---|
+| Giai đoạn 2 chạy **song song** giai đoạn 1 | Worker chỉ lấy dòng của job **đã ingest xong** (PROCESSING) | Ingest lỗi giữa chừng thì dữ liệu dở bị xoá; nếu worker đã kịp xử lý một phần, bảng `customer` sẽ có dữ liệu của 1 file hỏng. Cái giá: chờ ingest xong (~8 s / 1 triệu dòng), rất nhỏ so với thời gian gọi API |
+| "Retry tối đa 3 lần, 200 → 400 → 800 ms" | `max-attempts=3` = **tổng** 3 lần gọi (1 lần đầu + 2 lần thử lại), chờ 200 → 400 ms | Đặt tên theo tổng số lần gọi cho dễ đếm; muốn thử lại 3 lần thì đặt `max-attempts=4` |
+
+### Thông số giai đoạn 2 và lập luận
+
+| Thông số | Giá trị | Dựa vào đâu |
+|---|---|---|
+| `import.api.batch-size` | 100 | **Giới hạn của API** (mock nhận tối đa 100 / request). Bulk càng lớn càng ít request (chi phí cố định mỗi request: kết nối, header, độ trễ mạng — cùng lập luận với `chunk-size`) |
+| `import.api.max-concurrent` | 16 | **Định luật Little**: số request đang bay = số request/giây × thời gian mỗi request. Happy case độ trễ ~100 ms → 16 đồng thời ≈ 160 request/s ≈ 16.000 dòng/s. Với API thật: lấy rate limit họ cho × độ trễ p95. **Chưa đo** |
+| `import.process.workers` | 8 | Mỗi worker có 500 dòng = 5 request → 8 worker tạo tối đa 40 request chờ, **gấp 2,5 lần** 16 thẻ Semaphore → luôn có request xếp hàng sẵn, thẻ không bao giờ bỏ trống lúc worker đang ghi DB. Worker giữ connection DB chỉ trong 2 transaction ngắn: 6 writer + 8 worker = 14 ≤ pool 16 |
+| `import.process.claim-size` | 500 | Đủ lớn để chi phí 2 transaction (claim + ghi) chia cho nhiều dòng; đủ nhỏ để 1 chunk lỗi / pod chết chỉ ảnh hưởng 500 dòng và RAM chỉ 8 × 500 = 4.000 dòng |
+| `import.api.max-attempts` + `initial-backoff` | 3, 200 ms, nhân đôi | **Exponential backoff** (khuyến nghị chuẩn của AWS / Google cho gọi API): lỗi tạm thời thường tự hết sau vài trăm ms; chờ tăng dần để không dội thêm tải vào bên đang quá tải. 3 lần là mức phổ biến — thêm nữa thường chỉ kéo dài thời gian chờ một lỗi thật |
+| 429 không tính lượt, tối đa `max-rate-limit-waits=20` | | 429 nghĩa là "gửi chậm lại", không phải request sai → chờ `Retry-After` rồi gửi lại là đúng; giới hạn 20 lần để không kẹt mãi nếu bên kia chặn hẳn |
+| `connect-timeout` / `read-timeout` | 2 s / 5 s | Kết nối trong mạng nội bộ thường < 100 ms nên 2 s là dư; 5 s gấp nhiều lần độ trễ bình thường của 1 bulk request. **Không có timeout thì 1 request treo giữ thẻ Semaphore mãi** — giống bài học timeout của OrderService |
+| `import.process.stale-after` | 5 m | Cùng nguyên tắc với `ingest.stale-after`: phải lớn hơn nhiều lần thời gian xử lý 1 chunk. Trường hợp xấu nhất 1 request: 3 × 5 s timeout + 0,6 s chờ + tối đa 20 lần 429 × ~1 s ≈ 36 s → 5 phút gấp ~8 lần |
+| `import.process.poll-interval` | 1 s | Hết việc thì ngủ; 1 s đủ nhanh để job mới được nhận gần như ngay, đủ chậm để 8 worker × 1 câu SELECT / giây không đáng kể với MySQL |
+
+### Test
+
+| Test | Kiểm chứng |
+|---|---|
+| `ThirdPartyClientTest` (7) | Kết quả đúng thứ tự; 5xx thử lại rồi thành công; hết 3 lần thì lỗi; 400 không thử lại; 429 chờ `Retry-After` và không tính lượt; 429 quá nhiều thì bỏ; kết quả sai thứ tự bị từ chối |
+| `ProcessServiceTest` (8) | Xử lý hết + job COMPLETED + dữ liệu chuyển đúng kiểu; dòng sai lúc ingest → COMPLETED_WITH_ERRORS; 1 request lỗi hẳn chỉ làm đúng 100 dòng của nó FAILED; **8 luồng cùng claim, mỗi dòng chỉ được nhận 1 lần** (`MAX(attempts) = 1`); xử lý lại không sinh bản ghi trùng; dòng PROCESSING quá hạn được trả về NEW, dòng mới claim thì không; worker nền tự nhận job và dừng sạch |
+
+API bên thứ ba trong test là `StubThirdParty` (HTTP server thật trong JDK, cổng ngẫu nhiên) để điều khiển được từng loại lỗi. Worker nền bị tắt khi test bằng `src/test/resources/config/application.properties`.
+
+### Giới hạn đã biết
+
+- **Tắt service (rolling update)**: dòng đang PROCESSING của worker bị dừng phải chờ tối đa `stale-after` (5 phút) mới được làm lại. Cải tiến: lúc tắt, trả ngay các dòng mình đang giữ về NEW.
+- **Bộ đếm có thể lệch** khi 1 chunk xử lý lâu hơn `stale-after` (xem mục chống ghi trùng).
+- **Dòng "độc"**: dòng làm worker chết mỗi lần xử lý sẽ bị claim lại mãi (`attempts` tăng dần nhưng chưa có giới hạn).
+- **Chưa đo tốc độ giai đoạn 2** với 1 triệu dòng và `ThirdPartyMock` thật — để Phase 5.
+- Chưa có API xem danh sách dòng lỗi / chạy lại dòng lỗi, và `ingest.stale-after` vẫn tính từ lúc bắt đầu (chưa có heartbeat) — Phase 4.

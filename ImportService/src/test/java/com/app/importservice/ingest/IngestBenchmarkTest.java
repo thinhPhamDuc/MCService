@@ -72,7 +72,7 @@ class IngestBenchmarkTest {
                 jdbc.execute("TRUNCATE TABLE import_row"); // mọi lần đo bắt đầu từ bảng rỗng
                 Path file = Files.copy(source, dir.resolve("run.csv"));
                 long jobId = jobs.create("bench");
-                IngestService service = new IngestService(jobs, rows, new ImportProperties(dir, config));
+                IngestService service = new IngestService(jobs, rows, new ImportProperties(dir, config, null, null));
 
                 long start = System.nanoTime();
                 service.run(jobId, file);

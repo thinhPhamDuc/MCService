@@ -129,6 +129,7 @@ services:
       SPRING_DATASOURCE_USERNAME: app
       SPRING_DATASOURCE_PASSWORD: secret
       IMPORT_STORAGE_DIR: /data/imports
+      IMPORT_API_BASE_URL: http://thirdparty-mock:8090
       LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
     volumes:
       - import-files:/data/imports   # file upload chờ ingest; mất file này khi container bị xoá nếu không có volume

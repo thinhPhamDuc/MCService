@@ -23,6 +23,18 @@ class ImportPropertiesTest {
     }
 
     @Test
+    void missingProcessAndApiConfigUsesDefaults() {
+        ImportProperties properties = bind(Map.of());
+
+        assertThat(properties.process().enabled()).isTrue();
+        assertThat(properties.process().workers()).isEqualTo(8);
+        assertThat(properties.process().claimSize()).isEqualTo(500);
+        assertThat(properties.api().batchSize()).isEqualTo(100);
+        assertThat(properties.api().maxConcurrent()).isEqualTo(16);
+        assertThat(properties.api().maxAttempts()).isEqualTo(3);
+    }
+
+    @Test
     void configuredValueOverridesOnlyThatField() {
         ImportProperties.Ingest ingest = bind(Map.of("import.ingest.writers", "3")).ingest();
 

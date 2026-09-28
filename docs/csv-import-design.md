@@ -1,6 +1,6 @@
 # Thiết kế: Import CSV ~1 triệu dòng (ImportService)
 
-> Trạng thái: **Đã duyệt** — Phase 1, 2 xong (2026-09-27). Đã làm gì + lập luận thông số: [`csv-import-implementation.md`](csv-import-implementation.md). Nhánh: `feature/csv-import`.
+> Trạng thái: **Đã duyệt** — Phase 1, 2 (2026-09-27), 3 (2026-09-28) xong. Đã làm gì + lập luận thông số: [`csv-import-implementation.md`](csv-import-implementation.md). Nhánh: `feature/csv-import`.
 
 ## 0. Quyết định đã chốt
 
@@ -72,7 +72,7 @@ ImportService :8084 ────────────────────
   │ GIAI ĐOẠN 1 — INGEST (1 reader + W writer)                        │
   │   stream CSV → validate → chunk 1000 → INSERT import_row (NEW)    │
   │                                                                   │
-  │ GIAI ĐOẠN 2 — PROCESS (K worker virtual thread, song song gđ 1)   │
+  │ GIAI ĐOẠN 2 — PROCESS (K worker virtual thread, sau khi gđ 1 xong)│
   │   tx ngắn: claim 500 dòng NEW (FOR UPDATE SKIP LOCKED) → PROCESSING│
   │   KHÔNG giữ transaction: 5 bulk request × 100 dòng, mỗi request   │
   │   1 virtual thread, qua Semaphore(api.max-concurrent)  ───────────┼──▶ ThirdPartyMock :8090
@@ -165,7 +165,7 @@ Mặc định trả ngay, không lỗi. Có sẵn nút chỉnh (giống `/admin/
 
 | Tình huống | Xử lý |
 |---|---|
-| API lỗi 5xx / timeout | Retry tối đa 3 lần, backoff 200 ms → 400 ms → 800 ms; hết lượt → dòng `FAILED` + lý do |
+| API lỗi 5xx / timeout | Tối đa 3 lần gọi (1 lần đầu + 2 lần thử lại), chờ 200 ms → 400 ms; hết lượt → dòng `FAILED` + lý do |
 | API trả 429 | Chờ theo `Retry-After` rồi thử lại, không tính vào số lần retry |
 | Pod chết giữa giai đoạn 2 | Dòng `PROCESSING` có `claimed_at` quá 5 phút được coi là bỏ dở → worker khác claim lại |
 | Pod chết giữa giai đoạn 1 | Job `INGESTING` quá hạn → `FAILED`, upload lại (giai đoạn 1 chỉ vài chục giây; muốn resume cần lưu file trên volume bền — ghi nhận là giới hạn) |

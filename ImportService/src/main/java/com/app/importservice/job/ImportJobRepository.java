@@ -71,6 +71,37 @@ public class ImportJobRepository {
                 JobStatus.FAILED.name(), truncate(error), id);
     }
 
+    /**
+     * Job cũ nhất đã ingest xong (PROCESSING) mà còn dòng NEW. Worker ưu tiên job cũ trước (FIFO):
+     * người upload trước xong trước. Chỉ lấy job PROCESSING, không lấy job đang INGESTING:
+     * nếu ingest lỗi giữa chừng, dữ liệu dở bị xoá — worker không được xử lý nửa file đó.
+     */
+    public Optional<Long> findJobWithNewRows() {
+        return jdbc.queryForList("""
+                SELECT j.id FROM import_job j
+                WHERE j.status = 'PROCESSING'
+                  AND EXISTS (SELECT 1 FROM import_row r WHERE r.status = 'NEW' AND r.job_id = j.id)
+                ORDER BY j.id
+                LIMIT 1
+                """, Long.class).stream().findFirst();
+    }
+
+    public List<Long> findProcessing() {
+        return jdbc.queryForList("SELECT id FROM import_job WHERE status = ?", Long.class, JobStatus.PROCESSING.name());
+    }
+
+    /** Cộng tiến độ sau mỗi chunk (gọi trong transaction ghi kết quả chunk). */
+    public void addProgress(long id, int processed, int failed) {
+        jdbc.update("UPDATE import_job SET processed_rows = processed_rows + ?, failed_rows = failed_rows + ? WHERE id = ?",
+                processed, failed, id);
+    }
+
+    /** Chỉ kết thúc job đang PROCESSING: 2 worker cùng gọi thì chỉ 1 người đổi được (trả về true). */
+    public boolean finishIfProcessing(long id, JobStatus status) {
+        return jdbc.update("UPDATE import_job SET status = ?, finished_at = NOW(3) WHERE id = ? AND status = ?",
+                status.name(), id, JobStatus.PROCESSING.name()) == 1;
+    }
+
     /** Job INGESTING bắt đầu trước (now - staleAfter): pod xử lý nó nhiều khả năng đã chết. */
     public List<Long> findStaleIngesting(Duration staleAfter) {
         return jdbc.queryForList(
