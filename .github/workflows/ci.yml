@@ -18,19 +18,29 @@ jobs:
   test:
     runs-on: ubuntu-latest          # máy ảo Linux do GitHub cấp, xoá sạch sau mỗi lần chạy
     strategy:
-      fail-fast: false              # 1 service fail thì 2 service kia vẫn chạy tiếp để xem kết quả
-      matrix:
-        service: [UserService, OrderService, PaymentService]   # nhân job thành 3 bản, chạy SONG SONG
+      fail-fast: false              # 1 service fail thì các service khác vẫn chạy tiếp để xem kết quả
+      matrix:                       # nhân job thành 5 bản, chạy SONG SONG; mỗi service dùng đúng JDK của nó
+        include:
+          - service: UserService
+            java: '17'
+          - service: OrderService
+            java: '17'
+          - service: PaymentService
+            java: '17'
+          - service: ImportService      # Java 25 (virtual thread); test chạy MySQL thật bằng Testcontainers
+            java: '25'                  # -> cần Docker, máy ảo ubuntu-latest của GitHub có sẵn
+          - service: ThirdPartyMock
+            java: '25'
     defaults:
       run:
         working-directory: ${{ matrix.service }}
     steps:
       - uses: actions/checkout@v7            # lấy code về máy ảo
 
-      - uses: actions/setup-java@v6          # cài JDK 17 (khớp toolchain trong build.gradle)
+      - uses: actions/setup-java@v6          # cài JDK khớp toolchain trong build.gradle của service
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: ${{ matrix.java }}
 
       - uses: gradle/actions/setup-gradle@v6 # cache thư viện Gradle giữa các lần chạy -> lần sau nhanh hơn
 
@@ -44,7 +54,7 @@ jobs:
           path: ${{ matrix.service }}/build/reports/tests/test
 
   build-push:
-    needs: test                 # chỉ chạy khi CẢ 3 job test đều xanh
+    needs: test                 # chỉ chạy khi TẤT CẢ job test đều xanh
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'   # PR chưa được duyệt -> không tạo image
     runs-on: ubuntu-latest
     permissions:
@@ -59,6 +69,10 @@ jobs:
             image: orderservice
           - service: PaymentService
             image: paymentservice
+          - service: ImportService
+            image: importservice
+          - service: ThirdPartyMock
+            image: thirdpartymock
     steps:
       - uses: actions/checkout@v7
 
@@ -94,7 +108,7 @@ jobs:
   # CD: ghi tag image vừa build vào Git -> ArgoCD thấy Git đổi -> tự deploy.
   # CI KHÔNG đụng vào cluster, chỉ sửa Git (mô hình GitOps "pull").
   update-manifest:
-    needs: build-push           # chỉ chạy khi CẢ 3 image đã push thành công
+    needs: build-push           # chỉ chạy khi TẤT CẢ image đã push thành công
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -106,7 +120,7 @@ jobs:
           ref: main             # lấy main MỚI NHẤT (không phải commit đã kích hoạt) để push không bị từ chối
 
       - name: Set image tags to this commit
-        # Monorepo: 1 commit build cả 3 image cùng SHA, nên đổi mọi dòng newTag về SHA này
+        # Monorepo: 1 commit build mọi image cùng SHA, nên đổi mọi dòng newTag về SHA này
         run: |
           sed -i -E "s|(newTag:).*|\1 ${GITHUB_SHA}|" deploy/envs/local/kustomization.yaml
           git diff

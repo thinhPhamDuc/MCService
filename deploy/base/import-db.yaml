@@ -1,0 +1,77 @@
+# MySQL cho ImportService (docs/csv-import-design.md). Cùng khuôn với *-db.yaml của Postgres.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: import-db-secret
+type: Opaque
+stringData:
+  MYSQL_DATABASE: import_db
+  MYSQL_USER: app
+  MYSQL_PASSWORD: secret
+  MYSQL_ROOT_PASSWORD: secret
+---
+# 5Gi: mỗi lần import 1 triệu dòng thêm khoảng 300 MB vào import_row + 300 MB vào customer,
+# và bảng tạm import_row CHƯA có bước dọn (docs/csv-import-implementation.md, "Giới hạn đã biết").
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: import-db-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: import-db
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate          # DB: tắt pod cũ rồi mới bật pod mới (không cho 2 MySQL cùng ghi 1 ổ đĩa)
+  selector:
+    matchLabels:
+      app: import-db
+  template:
+    metadata:
+      labels:
+        app: import-db
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.4              # có bản amd64 + arm64
+          envFrom:
+            - secretRef:
+                name: import-db-secret
+          ports:
+            - containerPort: 3306
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 1Gi               # InnoDB buffer pool mặc định 128 MB + kết nối + sort buffer
+          readinessProbe:
+            exec:
+              # -h 127.0.0.1: kiểm tra qua TCP. Lần khởi tạo đầu MySQL chạy 1 server tạm chỉ nghe socket,
+              # ping qua socket sẽ báo sẵn sàng quá sớm (giống healthcheck trong docker-compose.yml)
+              command: ["sh", "-c", "mysqladmin ping -h 127.0.0.1 -u \"$MYSQL_USER\" -p\"$MYSQL_PASSWORD\" --silent"]
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: import-db-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: import-db
+spec:
+  selector:
+    app: import-db
+  ports:
+    - port: 3306

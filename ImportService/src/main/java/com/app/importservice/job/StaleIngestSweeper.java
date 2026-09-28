@@ -28,6 +28,12 @@ public class StaleIngestSweeper {
 
     @Scheduled(fixedDelayString = "PT1M", initialDelayString = "PT1M")
     public void sweep() {
+        for (long jobId : jobs.findStaleQueued(config.queuedTimeout())) {
+            if (jobs.failIfStillQueued(jobId, "Still queued after " + config.queuedTimeout()
+                    + " (service probably restarted and lost its queue). Please upload the file again.")) {
+                log.warn("Marked stale queued job as FAILED jobId={}", jobId);
+            }
+        }
         for (long jobId : jobs.findStaleIngesting(config.staleAfter())) {
             if (jobs.failIfStillIngesting(jobId, "Ingest interrupted (no heartbeat for " + config.staleAfter()
                     + ", service probably restarted). Please upload the file again.")) {

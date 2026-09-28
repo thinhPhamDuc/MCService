@@ -13,7 +13,7 @@
 | 3 | Worker (virtual thread) gọi bulk API, ghi bảng `customer` | ✅ 2026-09-28 | `9869def` |
 | 4 | API tiến độ / danh sách lỗi / retry-failed + heartbeat cho ingest | ✅ 2026-09-28 | `7ed20e4` |
 | 5 | Đo toàn bộ giai đoạn 1 + 2 | ⏭️ bỏ qua (quyết định 2026-09-28) — các con số giai đoạn 2 vẫn là **lập luận, chưa đo** | |
-| 6 | K8s + CI | ⏳ | |
+| 6 | K8s + CI | ✅ 2026-09-28 (chưa merge vào main) | xem `git log` |
 
 ---
 
@@ -463,3 +463,67 @@ Sửa 1 test cũ: `concurrentWorkersNeverClaimTheSameRow` từng kiểm tra "đ�
 - Lúc tắt service, trả ngay các dòng worker đang giữ về NEW (hiện phải chờ `process.stale-after` 5 phút).
 - Giới hạn số lần claim cho "dòng độc".
 - Đo tốc độ toàn bộ với 1 triệu dòng — Phase 5.
+
+
+---
+
+## Phase 6 — Kubernetes + CI
+
+### Mục đích
+
+Đưa 2 service mới vào đúng đường deploy đang có (Bài 6–8): **push main → CI test → build image multi-arch lên GHCR → bot đổi `newTag` → ArgoCD deploy**. Không thêm cách deploy mới nào.
+
+### Đã thêm
+
+| File | Nội dung | Vì sao đặt ở đây |
+|---|---|---|
+| `deploy/base/import-db.yaml` | Secret + PVC 5Gi + Deployment `mysql:8.4` (Recreate) + Service | Cùng khuôn `*-db.yaml` của Postgres. PVC 5Gi vì mỗi lần import 1 triệu dòng thêm ~600 MB và bảng tạm chưa được dọn |
+| `deploy/base/importservice.yaml` | Deployment + Service :8084, probe như các service cũ, `emptyDir` 2Gi cho file upload, `JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=60` | Service thật → base, môi trường nào cũng có |
+| `deploy/envs/local/thirdparty-mock.yaml` | Deployment + Service :8090 (ClusterIP) | **Mock chỉ có ở local** → overlay, không phải base. Môi trường thật đổi `IMPORT_API_BASE_URL` sang API thật |
+| `deploy/envs/local/kustomization.yaml` | Thêm resource mock + 2 dòng `images` | Bot CI đổi **mọi** dòng `newTag` nên 2 image mới tự được cập nhật |
+| `deploy/envs/local/httproute.yaml` | `/imports` → `importservice:8084`, `timeouts.request: 120s` | Envoy mặc định cắt request sau 15 s; upload 150 MB qua mạng chậm có thể lâu hơn |
+| `.github/workflows/ci.yml` | Job `test`: matrix `include` có cột `java` (17 cho 3 service cũ, 25 cho 2 service mới). Job `build-push`: thêm 2 image | Mỗi service test đúng JDK của nó. Test ImportService chạy Testcontainers → cần Docker, máy `ubuntu-latest` có sẵn |
+
+### Các lựa chọn và lý do
+
+| Lựa chọn | Lý do |
+|---|---|
+| `emptyDir` cho file upload, không dùng PVC | File chỉ cần ~10 giây (lúc ingest) và **chính pod nhận file** đọc nó. Pod chết thì mất file, nhưng job cũng FAILED (mất nhịp tim) → người dùng upload lại. PVC `ReadWriteOnce` còn cản việc tăng replicas |
+| `replicas: 1` | Đủ cho local. Tăng lên 2 vẫn đúng: upload + ingest xảy ra trên cùng 1 pod, giai đoạn 2 thì worker của 2 pod chia việc nhờ `SKIP LOCKED` |
+| `MaxRAMPercentage=60` | JVM mặc định chỉ lấy 25% RAM container làm heap (192 MB với limit 768Mi). Service này giữ tới 16 chunk + 8 × 500 dòng trong RAM → 60% (~460 MB) |
+| Mock nằm trong overlay | "Base = cái môi trường nào cũng cần". Mock là đồ giả của local; để trong base thì production cũng deploy mock |
+| `timeouts.request: 120s` chỉ cho `/imports` | Không nới timeout cho `/auth`, `/orders`: request thường mà mất > 15 s là có vấn đề cần thấy |
+
+### Lỗi phát hiện khi viết manifest (đã sửa)
+
+**Job QUEUED kẹt mãi khi pod tắt.** Hàng đợi ingest nằm trong RAM. Pod bị tắt (rolling update khi ArgoCD deploy bản mới, OOMKill) lúc đang có file chờ → hàng đợi mất, file trên `emptyDir` mất → job nằm ở QUEUED **mãi mãi** (sweeper chỉ xử lý INGESTING).
+
+| Trường hợp | Xử lý |
+|---|---|
+| Pod tắt êm (rolling update, scale down) | `IngestService.shutdown()` đánh FAILED ngay các job còn trong hàng đợi, lỗi "Service stopped before this file was processed. Please upload it again." |
+| Pod chết đột ngột (OOMKill, node chết) | `StaleIngestSweeper` đánh FAILED job QUEUED quá `import.ingest.queued-timeout` = 30 phút. Mỗi file ingest ~10 s, chờ 30 phút nghĩa là hàng đợi đã mất chứ không phải đang đông |
+
+Test: `IngestServiceTest.shutdownFailsJobsStillWaitingInQueue`, `oldQueuedJobIsFoundAsStale`.
+
+### Đã kiểm chứng / chưa kiểm chứng
+
+| | |
+|---|---|
+| ✅ `kubectl kustomize deploy/envs/local` | Render đúng, 2 image mới được thay bằng `ghcr.io/thinhphamduc/mcservice-*` |
+| ✅ `kubectl apply -k deploy/envs/local --dry-run=server` | API server chấp nhận toàn bộ, kể cả `timeouts` của HTTPRoute (Gateway API v1.6.1) và `emptyDir.sizeLimit`. Dry-run không tạo gì trên cluster |
+| ✅ YAML của workflow | Parse được; matrix test 5 service (17/17/17/25/25), build 5 image. Temurin 25 là bản LTS có trên Adoptium |
+| ✅ 45 test ImportService | Pass trên máy dev |
+| ⏳ CI thật trên GitHub | Chưa chạy — chạy khi push nhánh / mở PR (job test), và khi merge main (build + deploy) |
+| ⏳ Build image Java 25 | Chưa build (Claude không chạy `docker build` thay bạn); CI hoặc `docker compose build` sẽ build |
+| ⏳ Chạy thật trên cluster | Chưa deploy |
+
+### Khi merge vào main, điều gì xảy ra
+
+```
+merge → CI: test 5 service → build 5 image (amd64 + arm64) → bot commit "deploy(local): <sha>" đổi mọi newTag
+      → ArgoCD thấy Git đổi → tạo import-db, importservice, thirdparty-mock + cập nhật HTTPRoute
+```
+
+- Commit merge đầu tiên trỏ tới tag cũ (`401a056…`) mà GHCR **chưa có** image importservice / thirdpartymock → 2 pod này `ImagePullBackOff` khoảng 6 phút cho tới khi bot commit tag mới. Bình thường, tự hết.
+- ImportService có thể khởi động lại 1–2 lần nếu chạy trước khi MySQL sẵn sàng (lần đầu MySQL khởi tạo mất ~30 s) — giống các service cũ với Postgres.
+- RAM cluster: thêm **requests ~1,3 GB** (MySQL 512Mi + ImportService 512Mi + mock 256Mi) trên Docker Desktop ~7,7 GB đang chạy cả ArgoCD, Envoy Gateway và 3 cặp service + Postgres.

@@ -10,3 +10,5 @@ resources:
   - paymentservice.yaml
   - order-db.yaml
   - orderservice.yaml
+  - import-db.yaml
+  - importservice.yaml

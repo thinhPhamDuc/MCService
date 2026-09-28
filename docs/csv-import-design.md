@@ -1,6 +1,6 @@
 # Thiết kế: Import CSV ~1 triệu dòng (ImportService)
 
-> Trạng thái: **Đã duyệt** — Phase 1, 2 (2026-09-27), 3, 4 (2026-09-28) xong. Đã làm gì + lập luận thông số: [`csv-import-implementation.md`](csv-import-implementation.md). Nhánh: `feature/csv-import`.
+> Trạng thái: **Đã duyệt** — Phase 1, 2 (2026-09-27), 3, 4, 6 (2026-09-28) xong; Phase 5 bỏ qua. Đã làm gì + lập luận thông số: [`csv-import-implementation.md`](csv-import-implementation.md). Nhánh: `feature/csv-import`.
 
 ## 0. Quyết định đã chốt
 

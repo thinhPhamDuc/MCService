@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: importservice
+spec:
+  # 1 pod là đủ. Tăng lên 2 vẫn đúng: pod nào nhận upload thì chính pod đó ingest (file nằm trên đĩa của nó),
+  # còn giai đoạn 2 thì worker của cả 2 pod cùng lấy việc nhờ SKIP LOCKED — không pod nào lấy trùng dòng.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: importservice
+  template:
+    metadata:
+      labels:
+        app: importservice
+    spec:
+      containers:
+        - name: importservice
+          image: importservice                  # tên ngắn: overlay (deploy/envs/*) thay bằng image GHCR + tag
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8084
+          env:
+            - name: SPRING_DATASOURCE_URL
+              value: jdbc:mysql://import-db:3306/import_db
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: import-db-secret
+                  key: MYSQL_USER
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: import-db-secret
+                  key: MYSQL_PASSWORD
+            # API bên thứ ba. Môi trường local dùng mock (deploy/envs/local/thirdparty-mock.yaml);
+            # môi trường thật đổi giá trị này trong overlay của môi trường đó.
+            - name: IMPORT_API_BASE_URL
+              value: http://thirdparty-mock:8090
+            - name: IMPORT_STORAGE_DIR
+              value: /data/imports
+            # JVM mặc định chỉ lấy 25% RAM của container làm heap. Service này giữ nhiều dữ liệu trong RAM
+            # (tối đa 16 chunk ingest + 8 × 500 dòng đang xử lý) nên cho heap 60%.
+            - name: JAVA_TOOL_OPTIONS
+              value: -XX:MaxRAMPercentage=60
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 768Mi
+          startupProbe:             # lần đầu còn chạy Flyway tạo bảng; cho tối đa 30 x 5s = 150s
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8084
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8084
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8084
+            periodSeconds: 5
+          volumeMounts:
+            - name: imports
+              mountPath: /data/imports
+      volumes:
+        # File upload chỉ cần trong lúc ingest (~10 giây) và do chính pod này đọc → emptyDir là đủ.
+        # Pod chết giữa chừng thì file mất cùng pod; sweeper đánh job FAILED sau 2 phút mất nhịp tim.
+        - name: imports
+          emptyDir:
+            sizeLimit: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: importservice
+spec:
+  selector:
+    app: importservice
+  ports:
+    - port: 8084
+      targetPort: 8084

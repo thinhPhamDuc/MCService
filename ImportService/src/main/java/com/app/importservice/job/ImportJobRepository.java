@@ -139,6 +139,19 @@ public class ImportJobRepository {
                 Long.class, JobStatus.INGESTING.name(), staleAfter.toSeconds());
     }
 
+    /** Job nằm ở QUEUED từ trước (now - timeout): hàng đợi trong RAM của pod nhận file đã mất. */
+    public List<Long> findStaleQueued(Duration timeout) {
+        return jdbc.queryForList(
+                "SELECT id FROM import_job WHERE status = ? AND created_at < NOW(3) - INTERVAL ? SECOND",
+                Long.class, JobStatus.QUEUED.name(), timeout.toSeconds());
+    }
+
+    /** Chỉ chuyển FAILED nếu job vẫn đang QUEUED (chưa kịp được ingest). */
+    public boolean failIfStillQueued(long id, String error) {
+        return jdbc.update("UPDATE import_job SET status = ?, error = ?, finished_at = NOW(3) WHERE id = ? AND status = ?",
+                JobStatus.FAILED.name(), truncate(error), id, JobStatus.QUEUED.name()) == 1;
+    }
+
     /** Chỉ chuyển FAILED nếu job vẫn đang INGESTING (tránh ghi đè khi job vừa kịp xong). */
     public boolean failIfStillIngesting(long id, String error) {
         return jdbc.update("UPDATE import_job SET status = ?, error = ?, finished_at = NOW(3) WHERE id = ? AND status = ?",

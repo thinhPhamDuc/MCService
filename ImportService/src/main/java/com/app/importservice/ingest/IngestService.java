@@ -20,6 +20,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
@@ -51,6 +53,8 @@ public class IngestService {
     private final ImportProperties.Ingest config;
     /** Giới hạn số file ingest cùng lúc; job còn lại nằm trong hàng đợi của executor (trạng thái QUEUED). */
     private final ExecutorService jobExecutor;
+    /** Job đã nhận nhưng chưa tới lượt. Hàng đợi này nằm trong RAM: pod tắt là mất. */
+    private final Set<Long> queued = ConcurrentHashMap.newKeySet();
 
     public IngestService(ImportJobRepository jobs, ImportRowRepository rows, ImportProperties properties) {
         this.jobs = jobs;
@@ -62,7 +66,11 @@ public class IngestService {
 
     /** Nhận job vào hàng đợi, trả về ngay (HTTP request không phải chờ đọc hết file). */
     public void submit(long jobId, Path file) {
-        jobExecutor.execute(() -> run(jobId, file));
+        queued.add(jobId);
+        jobExecutor.execute(() -> {
+            queued.remove(jobId);
+            run(jobId, file);
+        });
     }
 
     /** Chạy ingest 1 job từ đầu tới cuối và cập nhật trạng thái job. Không ném exception ra ngoài. */
@@ -168,9 +176,20 @@ public class IngestService {
         return reader;
     }
 
+    /**
+     * Pod tắt (rolling update, scale down): job còn chờ trong hàng đợi sẽ không bao giờ chạy, file của nó
+     * (emptyDir) cũng mất theo pod → báo FAILED ngay để người dùng upload lại, thay vì kẹt QUEUED mãi.
+     * Pod chết đột ngột (OOMKill) thì không chạy được đoạn này → StaleIngestSweeper xử lý sau queued-timeout.
+     */
     @PreDestroy
     void shutdown() {
         jobExecutor.shutdownNow();
+        for (long jobId : queued) {
+            if (jobs.failIfStillQueued(jobId, "Service stopped before this file was processed. Please upload it again.")) {
+                log.warn("Marked queued job as FAILED on shutdown jobId={}", jobId);
+            }
+        }
+        queued.clear();
     }
 
     private record Counts(int total, int invalid) {

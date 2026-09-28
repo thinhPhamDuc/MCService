@@ -28,13 +28,15 @@ public record ImportProperties(Path storageDir,
      * @param maxConcurrentJobs số file được ingest cùng lúc; file khác chờ ở trạng thái QUEUED
      * @param heartbeatInterval reader ghi nhịp tim vào import_job mỗi khoảng này
      * @param staleAfter        job INGESTING không có nhịp tim quá thời gian này coi như pod đã chết giữa chừng
+     * @param queuedTimeout     job QUEUED lâu hơn thế này coi như hàng đợi (trong RAM) đã mất cùng pod
      */
     public record Ingest(@DefaultValue("6") int writers,
                          @DefaultValue("1000") int chunkSize,
                          @DefaultValue("10") int queueCapacity,
                          @DefaultValue("1") int maxConcurrentJobs,
                          @DefaultValue("10s") Duration heartbeatInterval,
-                         @DefaultValue("2m") Duration staleAfter) {
+                         @DefaultValue("2m") Duration staleAfter,
+                         @DefaultValue("30m") Duration queuedTimeout) {
     }
 
     /**

@@ -2,6 +2,7 @@ package com.app.importservice.ingest;
 
 import com.app.importservice.TestCsv;
 import com.app.importservice.TestcontainersConfiguration;
+import com.app.importservice.config.ImportProperties;
 import com.app.importservice.job.ImportJob;
 import com.app.importservice.job.ImportJobRepository;
 import com.app.importservice.job.JobStatus;
@@ -31,6 +32,8 @@ class IngestServiceTest {
     private ImportJobRepository jobs;
     @Autowired
     private JdbcTemplate jdbc;
+    @Autowired
+    private ImportRowRepository rows;
 
     @TempDir
     Path dir;
@@ -131,6 +134,35 @@ class IngestServiceTest {
         jobs.heartbeat(alive);
 
         assertThat(jobs.findStaleIngesting(Duration.ofMinutes(2))).contains(dead).doesNotContain(alive);
+    }
+
+    @Test
+    void oldQueuedJobIsFoundAsStale() {
+        long old = jobs.create("old.csv");
+        long fresh = jobs.create("fresh.csv");
+        jdbc.update("UPDATE import_job SET created_at = NOW(3) - INTERVAL 1 HOUR WHERE id = ?", old);
+
+        assertThat(jobs.findStaleQueued(Duration.ofMinutes(30))).contains(old).doesNotContain(fresh);
+    }
+
+    @Test
+    void shutdownFailsJobsStillWaitingInQueue() throws Exception {
+        var config = new ImportProperties.Ingest(6, 1000, 10, 1, Duration.ofSeconds(10), Duration.ofMinutes(2),
+                Duration.ofMinutes(30));
+        IngestService service = new IngestService(jobs, rows, new ImportProperties(dir, config, null, null));
+        // 1 file ingest cùng lúc: file đầu chạy, 2 file sau nằm chờ trong hàng đợi
+        long first = jobs.create("q1.csv");
+        long second = jobs.create("q2.csv");
+        long third = jobs.create("q3.csv");
+        service.submit(first, TestCsv.write(dir, "q1.csv", TestCsv.lines(20_000, 0)));
+        service.submit(second, TestCsv.write(dir, "q2.csv", TestCsv.lines(10, 0)));
+        service.submit(third, TestCsv.write(dir, "q3.csv", TestCsv.lines(10, 0)));
+
+        service.shutdown();
+
+        ImportJob job = jobs.findById(third).orElseThrow();
+        assertThat(job.status()).isEqualTo(JobStatus.FAILED);
+        assertThat(job.error()).contains("Service stopped before this file was processed");
     }
 
     @Test
